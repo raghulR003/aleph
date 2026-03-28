@@ -52,7 +52,7 @@ const {
 
     <div class="mx-auto max-w-[1120px] xl:grid xl:grid-cols-[minmax(0,45rem)_12rem] xl:gap-14 2xl:gap-16 xl:items-start">
       {/* Article header */}
-      <header class="max-w-article mx-auto mb-10 xl:mx-0 xl:max-w-none">
+      <header class="max-w-article mx-auto mb-6 xl:mx-0 xl:max-w-none">
         {
           post.data.tags.length > 0 && (
             <div class="flex flex-wrap gap-2 mb-4">
@@ -96,7 +96,9 @@ const {
 
       {/* Sticky TOC sidebar */}
       <aside class="hidden xl:block xl:row-span-3 xl:min-w-0 xl:self-start">
-        <TableOfContents headings={headings} />
+        <div class="sticky top-20">
+          <TableOfContents headings={headings} />
+        </div>
       </aside>
 
       {/* Main content */}

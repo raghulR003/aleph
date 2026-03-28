@@ -17,14 +17,31 @@ if (toc.length === 0) return null;
 
 <nav
   id="toc"
-  class="hidden xl:block sticky top-20 w-48 max-h-[calc(100vh-6rem)] overflow-y-auto custom-scrollbar rounded-card border border-border dark:border-border-dark bg-surface-card/70 dark:bg-surface-card-dark/70 backdrop-blur-sm p-4"
+  class="hidden xl:block w-48 max-h-[calc(100vh-6rem)] overflow-y-auto custom-scrollbar rounded-card border border-border dark:border-border-dark bg-surface-card/70 dark:bg-surface-card-dark/70 backdrop-blur-sm p-4"
   aria-label="Table of Contents"
 >
-  <h3
-    class="font-heading font-semibold text-[11px] uppercase tracking-[0.18em] text-text-muted dark:text-text-muted-dark mb-3"
-  >
-    On this page
-  </h3>
+  <div class="mb-4">
+    <div class="mb-3 flex items-center justify-between gap-2">
+      <h3
+        class="font-heading font-semibold text-[11px] uppercase tracking-[0.18em] text-text-muted dark:text-text-muted-dark"
+      >
+        On this page
+      </h3>
+      <span
+        id="toc-progress-label"
+        class="text-[11px] font-medium text-text-muted dark:text-text-muted-dark"
+      >
+        0%
+      </span>
+    </div>
+    <div class="h-1 overflow-hidden rounded-full bg-border dark:bg-border-dark">
+      <div
+        id="toc-progress-bar"
+        class="h-full w-0 rounded-full bg-accent dark:bg-accent-dark transition-[width] duration-150"
+      ></div>
+    </div>
+  </div>
+
   <ul class="space-y-1 border-l-2 border-border dark:border-border-dark">
     {
       toc.map((heading) => (
@@ -53,8 +70,14 @@ if (toc.length === 0) return null;
     const tocLinks = document.querySelectorAll("[data-toc-link]");
     if (tocLinks.length === 0) return;
 
+    const progressBar = document.getElementById("toc-progress-bar");
+    const progressLabel = document.getElementById("toc-progress-label");
     const headingElements = document.querySelectorAll("article :is(h2, h3)");
     if (headingElements.length === 0) return;
+
+    if (window.__tocObserver) {
+      window.__tocObserver.disconnect();
+    }
 
     const observer = new IntersectionObserver(
       (entries) => {
@@ -78,7 +101,28 @@ if (toc.length === 0) return null;
       }
     );
 
+    window.__tocObserver = observer;
+
     headingElements.forEach((el) => observer.observe(el));
+
+    const updateProgress = () => {
+      const article = document.querySelector("article[data-pagefind-body]");
+      if (!article || !progressBar || !progressLabel) return;
+
+      const rect = article.getBoundingClientRect();
+      const viewportHeight = window.innerHeight;
+      const totalScrollable = Math.max(article.scrollHeight - viewportHeight * 0.6, 1);
+      const progressed = Math.min(Math.max(-rect.top, 0), totalScrollable);
+      const percent = Math.round((progressed / totalScrollable) * 100);
+
+      progressBar.style.width = `${percent}%`;
+      progressLabel.textContent = `${percent}%`;
+    };
+
+    updateProgress();
+    window.removeEventListener("scroll", window.__tocProgressHandler);
+    window.__tocProgressHandler = updateProgress;
+    window.addEventListener("scroll", window.__tocProgressHandler, { passive: true });
   }
 
   setupScrollspy();

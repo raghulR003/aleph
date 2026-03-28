@@ -144,6 +144,10 @@
     max-width: 43.75rem;
   }
 
+  .article-content > :first-child {
+    margin-top: 0 !important;
+  }
+
   .mdx-callout-content > :first-child,
   .comparison-panel > :first-child {
     margin-top: 0;
