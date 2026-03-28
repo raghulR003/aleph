@@ -96,7 +96,11 @@ const {
         </header>
 
         {/* Main content */}
-        <article class="article-content w-full xl:min-w-0" data-pagefind-body>
+        <article 
+          class="article-content w-full xl:min-w-0" 
+          data-pagefind-body={post.data.draft ? undefined : true}
+          {...(post.data.draft ? { "data-pagefind-ignore": true } : {})}
+        >
           <slot />
         </article>
 
