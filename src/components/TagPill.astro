@@ -1,0 +1,39 @@
+---
+interface Props {
+  tag: string;
+  count?: number;
+  size?: "sm" | "md" | "lg";
+}
+
+const { tag, count, size = "md" } = Astro.props;
+
+const sizeClasses = {
+  sm: "px-2 py-0.5 text-xs",
+  md: "px-3 py-1 text-sm",
+  lg: "px-4 py-1.5 text-base",
+};
+---
+
+<a
+  href={`/tags/${tag.toLowerCase()}`}
+  class:list={[
+    "inline-flex items-center gap-1.5 rounded-pill font-ui font-medium",
+    "bg-surface-card dark:bg-surface-card-dark",
+    "text-text-secondary dark:text-text-secondary-dark",
+    "border border-border dark:border-border-dark",
+    "hover:bg-accent/10 dark:hover:bg-accent-dark/10",
+    "hover:text-accent dark:hover:text-accent-dark",
+    "hover:border-accent/30 dark:hover:border-accent-dark/30",
+    "transition-all duration-150",
+    sizeClasses[size],
+  ]}
+>
+  <span>{tag}</span>
+  {
+    count !== undefined && (
+      <span class="text-text-muted dark:text-text-muted-dark font-normal">
+        ({count})
+      </span>
+    )
+  }
+</a>

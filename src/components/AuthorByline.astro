@@ -1,0 +1,42 @@
+---
+import { formatDate, getReadingTime } from "@/utils/posts";
+
+interface Props {
+  authorName: string;
+  authorAvatar: string;
+  pubDate: Date;
+  updatedDate?: Date;
+  body?: string;
+}
+
+const { authorName, authorAvatar, pubDate, updatedDate, body = "" } = Astro.props;
+const readingTime = getReadingTime(body);
+---
+
+<div class="flex items-center gap-4 not-prose">
+  <img
+    src={authorAvatar}
+    alt={authorName}
+    class="w-12 h-12 rounded-pill object-cover border-2 border-border dark:border-border-dark"
+    loading="lazy"
+  />
+  <div class="flex flex-col">
+    <span class="font-heading font-semibold text-sm text-text-primary dark:text-text-primary-dark">
+      {authorName}
+    </span>
+    <div class="flex items-center gap-2 text-sm text-text-secondary dark:text-text-secondary-dark">
+      <time datetime={pubDate.toISOString()}>
+        {formatDate(pubDate)}
+      </time>
+      {
+        updatedDate && (
+          <span class="text-text-muted dark:text-text-muted-dark">
+            (Updated {formatDate(updatedDate)})
+          </span>
+        )
+      }
+      <span class="w-1 h-1 rounded-full bg-text-muted dark:bg-text-muted-dark"></span>
+      <span>{readingTime}</span>
+    </div>
+  </div>
+</div>

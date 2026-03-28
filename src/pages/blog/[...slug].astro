@@ -1,0 +1,58 @@
+---
+import BlogPostLayout from "@/layouts/BlogPost.astro";
+import { getCollection } from "astro:content";
+import { getRelatedPosts } from "@/utils/posts";
+import Callout from "@/components/mdx/Callout.astro";
+import Figure from "@/components/mdx/Figure.astro";
+import Comparison from "@/components/mdx/Comparison.astro";
+import FAQ from "@/components/mdx/FAQ.astro";
+import Details from "@/components/mdx/Details.astro";
+import FileTree from "@/components/mdx/FileTree.astro";
+import Terminal from "@/components/mdx/Terminal.astro";
+import Timeline from "@/components/mdx/Timeline.astro";
+import TimelineItem from "@/components/mdx/TimelineItem.astro";
+
+const mdxComponents = {
+  Callout,
+  Figure,
+  Comparison,
+  FAQ,
+  Details,
+  FileTree,
+  Terminal,
+  Timeline,
+  TimelineItem,
+};
+
+export async function getStaticPaths() {
+  const posts = await getCollection("blog");
+  const authors = await getCollection("authors");
+
+  return posts.map((post) => {
+    const author = authors.find((a) => a.id === post.data.author);
+    return {
+      params: { slug: post.slug },
+      props: {
+        post,
+        authorName: author?.data.name || "Author",
+        authorAvatar: author?.data.avatar || "/images/avatar-default.svg",
+      },
+    };
+  });
+}
+
+const { post, authorName, authorAvatar } = Astro.props;
+const allPosts = await getCollection("blog");
+const relatedPosts = getRelatedPosts(post, allPosts, 3);
+const { Content, headings } = await post.render();
+---
+
+<BlogPostLayout
+  post={post}
+  headings={headings}
+  relatedPosts={relatedPosts}
+  authorName={authorName}
+  authorAvatar={authorAvatar}
+>
+  <Content components={mdxComponents} />
+</BlogPostLayout>

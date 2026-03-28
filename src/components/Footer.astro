@@ -1,0 +1,77 @@
+---
+const currentYear = new Date().getFullYear();
+---
+
+<footer
+  class="border-t border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark mt-20"
+>
+  <div class="max-w-wide mx-auto px-4 sm:px-6 lg:px-8 py-12">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-8">
+      <!-- Brand -->
+      <div>
+        <a href="/" class="flex items-center gap-2 text-lg font-heading font-bold">
+          <span class="text-accent dark:text-accent-dark text-xl">&aleph;</span>
+          aleph.
+        </a>
+        <p class="mt-3 text-sm text-text-secondary dark:text-text-secondary-dark leading-relaxed">
+          Technical writing about software engineering, system design, and the
+          craft of building reliable systems.
+        </p>
+      </div>
+
+      <!-- Navigation -->
+      <div>
+        <h3 class="font-heading font-semibold text-sm uppercase tracking-wider text-text-muted dark:text-text-muted-dark mb-4">
+          Navigate
+        </h3>
+        <ul class="space-y-2 text-sm">
+          <li>
+            <a
+              href="/"
+              class="text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors"
+            >
+              Home
+            </a>
+          </li>
+          <li>
+            <a
+              href="/tags"
+              class="text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors"
+            >
+              Tags
+            </a>
+          </li>
+          <li>
+            <a
+              href="/search"
+              class="text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors"
+            >
+              Search
+            </a>
+          </li>
+        </ul>
+      </div>
+
+      <!-- Philosophy -->
+      <div>
+        <h3 class="font-heading font-semibold text-sm uppercase tracking-wider text-text-muted dark:text-text-muted-dark mb-4">
+          Philosophy
+        </h3>
+        <p class="text-sm text-text-secondary dark:text-text-secondary-dark leading-relaxed">
+          No newsletter, no endless funnels, no engagement farming. Just writing,
+          code, and ideas worth sharing.
+        </p>
+      </div>
+    </div>
+
+    <!-- Bottom bar -->
+    <div class="mt-10 pt-6 border-t border-border dark:border-border-dark flex flex-col sm:flex-row justify-between items-center gap-4">
+      <p class="text-xs text-text-muted dark:text-text-muted-dark">
+        &copy; {currentYear} aleph. Built with Astro.
+      </p>
+      <p class="text-xs text-text-muted dark:text-text-muted-dark">
+        Quiet by design.
+      </p>
+    </div>
+  </div>
+</footer>

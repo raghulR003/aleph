@@ -1,0 +1,101 @@
+---
+title: "The Art of System Design Interviews"
+description: "A practical framework for approaching system design questions — from requirements gathering to capacity planning, with real examples from FAANG interviews."
+pubDate: 2026-03-15
+coverImage: "https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=1200&h=600&fit=crop"
+coverAlt: "Server room with glowing network cables"
+author: "default"
+tags: ["system-design", "architecture", "interviews"]
+---
+
+## The Framework
+
+Every system design interview follows the same arc. Master this framework and you can handle any question thrown at you.
+
+### Step 1: Requirements Clarification (5 minutes)
+
+Never jump straight into drawing boxes. Start by asking:
+
+- **Functional requirements**: What does the system do? What are the core use cases?
+- **Non-functional requirements**: What scale are we targeting? Latency requirements? Consistency vs. availability?
+- **Constraints**: Budget? Team size? Existing infrastructure?
+
+```
+Example: "Design a URL shortener"
+
+Functional:
+- Shorten long URLs to short codes
+- Redirect short codes to original URLs
+- Analytics (click counts, referrer tracking)
+
+Non-functional:
+- 100M URLs created per month
+- 10:1 read/write ratio → 1B redirects per month
+- < 100ms redirect latency
+- 99.99% availability
+```
+
+### Step 2: Back-of-Envelope Estimation (3 minutes)
+
+Quick math to establish the scale:
+
+```
+URLs created: 100M/month ≈ 40/second
+Redirects: 1B/month ≈ 400/second (peak: ~800/sec)
+Storage (5 years): 100M × 12 × 5 = 6B URLs
+Average URL size: ~500 bytes → 6B × 500B = 3TB
+```
+
+This tells us: moderate write throughput, high read throughput, significant but manageable storage.
+
+### Step 3: High-Level Design (10 minutes)
+
+Draw the boxes. Keep it simple — you can always add complexity later.
+
+For our URL shortener:
+
+1. **API Gateway** — rate limiting, authentication
+2. **Application Servers** — stateless, horizontally scalable
+3. **Database** — URL mappings (key-value store)
+4. **Cache Layer** — hot URLs in Redis/Memcached
+5. **Analytics Pipeline** — async click tracking
+
+### Step 4: Deep Dive (15 minutes)
+
+Pick 2-3 areas to go deep. This is where you demonstrate expertise:
+
+**Key Generation**: Base62 encoding of auto-incremented IDs vs. random generation with collision detection. Trade-offs:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Auto-increment + Base62 | Simple, no collisions | Predictable, single point of failure |
+| Random + collision check | Unpredictable | Collision probability increases |
+| Pre-generated keys | Fast, no collisions | Requires key management service |
+
+**Database Choice**: This is a classic key-value workload. Options:
+
+- **DynamoDB/Cassandra**: Excellent for high write throughput, eventually consistent
+- **Redis**: Sub-millisecond reads, but memory-bound
+- **PostgreSQL**: Strong consistency, but horizontal scaling is harder
+
+For 99.99% availability with high read throughput, I'd choose **DynamoDB** with a **Redis cache** layer.
+
+### Step 5: Wrap Up (2 minutes)
+
+Summarize trade-offs and mention what you'd do with more time:
+
+- Monitoring and alerting
+- Abuse prevention (spam URLs)
+- Custom short codes
+- Regional deployment for lower latency
+
+## The Meta-Skill
+
+The system design interview isn't about memorizing architectures. It's about demonstrating that you can:
+
+1. **Ask the right questions** before jumping to solutions
+2. **Make trade-offs** explicitly and justify them
+3. **Communicate** your thought process clearly
+4. **Adapt** when the interviewer changes constraints
+
+Practice with a timer. 35 minutes goes fast.

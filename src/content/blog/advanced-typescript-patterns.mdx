@@ -1,0 +1,142 @@
+---
+title: "Advanced TypeScript Patterns for Production Code"
+description: "Discriminated unions, branded types, and the builder pattern — three TypeScript patterns that will make your codebase significantly more maintainable."
+pubDate: 2026-03-20
+coverImage: "https://images.unsplash.com/photo-1516116216624-53e697fedbea?w=1200&h=600&fit=crop"
+coverAlt: "Abstract blue geometric pattern"
+author: "default"
+tags: ["typescript", "patterns", "architecture"]
+---
+
+## Beyond Basic Types
+
+If you've been writing TypeScript for a while, you've probably graduated from `string` and `number` to interfaces and generics. But TypeScript's type system is far more powerful than most developers realize.
+
+Here are three patterns I use in every production codebase.
+
+## Pattern 1: Discriminated Unions
+
+Instead of optional properties and runtime checks, use discriminated unions to make **impossible states unrepresentable**:
+
+```typescript title="api-response.ts"
+// Bad: Optional properties everywhere
+interface ApiResponse {
+  data?: User;
+  error?: string;
+  loading?: boolean;
+}
+
+// Good: Discriminated union
+type ApiResponse =
+  | { status: 'idle' }
+  | { status: 'loading' }
+  | { status: 'success'; data: User }
+  | { status: 'error'; error: string };
+
+// TypeScript narrows automatically
+function handleResponse(response: ApiResponse) {
+  switch (response.status) {
+    case 'success':
+      // TypeScript knows `data` exists here
+      console.log(response.data.name);
+      break;
+    case 'error':
+      // TypeScript knows `error` exists here
+      console.error(response.error);
+      break;
+  }
+}
+```
+
+The key insight: with the "bad" version, nothing prevents you from setting both `data` and `error` simultaneously. The discriminated union makes that state impossible at the type level.
+
+## Pattern 2: Branded Types
+
+A `userId` and an `orderId` are both strings, but they're not interchangeable. **Branded types** encode this distinction:
+
+```typescript title="branded-types.ts"
+// The brand — a phantom type that exists only at compile time
+declare const brand: unique symbol;
+
+type Brand<T, TBrand extends string> = T & {
+  readonly [brand]: TBrand;
+};
+
+// Define your branded types
+type UserId = Brand<string, 'UserId'>;
+type OrderId = Brand<string, 'OrderId'>;
+
+// Smart constructors with validation
+function createUserId(id: string): UserId {
+  if (!id.startsWith('usr_')) {
+    throw new Error(`Invalid user ID format: ${id}`);
+  }
+  return id as UserId;
+}
+
+function createOrderId(id: string): OrderId {
+  if (!id.startsWith('ord_')) {
+    throw new Error(`Invalid order ID format: ${id}`);
+  }
+  return id as OrderId;
+}
+
+// Now TypeScript catches mix-ups
+function getUser(id: UserId) { /* ... */ }
+function getOrder(id: OrderId) { /* ... */ }
+
+const userId = createUserId('usr_abc123');
+const orderId = createOrderId('ord_xyz789');
+
+getUser(userId);   // OK
+getUser(orderId);  // TYPE ERROR — cannot pass OrderId where UserId expected
+```
+
+This pattern eliminates an entire class of bugs where you accidentally pass the wrong ID to the wrong function.
+
+## Pattern 3: The Builder Pattern with Type Accumulation
+
+Use TypeScript's type system to enforce **required configuration steps** at compile time:
+
+```typescript title="query-builder.ts"
+type QueryConfig = {
+  table?: string;
+  columns?: string[];
+  where?: string;
+  limit?: number;
+};
+
+// Phantom type tracks which fields have been set
+type QueryBuilder<T extends Partial<QueryConfig> = {}> = {
+  from<Table extends string>(
+    table: Table
+  ): QueryBuilder<T & { table: Table }>;
+  select(
+    columns: string[]
+  ): QueryBuilder<T & { columns: string[] }>;
+  where(
+    condition: string
+  ): QueryBuilder<T & { where: string }>;
+  limit(
+    n: number
+  ): QueryBuilder<T & { limit: number }>;
+  // Only available when table AND columns are set
+  execute: T extends { table: string; columns: string[] }
+    ? () => Promise<unknown[]>
+    : never;
+};
+```
+
+With this pattern, calling `.execute()` before `.from()` and `.select()` is a **compile-time error**, not a runtime error.
+
+## When to Use These Patterns
+
+These patterns add complexity. Use them when:
+
+- **Discriminated unions**: Modeling state machines, API responses, form steps — anywhere with mutually exclusive states
+- **Branded types**: IDs, currency amounts, validated strings — anywhere you need to distinguish structurally identical types
+- **Builder pattern**: Configuration objects, query builders, complex constructors — anywhere with required steps
+
+The goal isn't to use the fanciest types possible. It's to make **wrong code fail to compile**.
+
+> Make illegal states unrepresentable. — Yaron Minsky

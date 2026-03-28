@@ -1,0 +1,39 @@
+---
+// Reading progress bar — sits at very top of page
+---
+
+<div
+  id="reading-progress"
+  class="reading-progress"
+  role="progressbar"
+  aria-valuenow="0"
+  aria-valuemin="0"
+  aria-valuemax="100"
+  aria-label="Reading progress"
+>
+</div>
+
+<script>
+  function setupProgress() {
+    const bar = document.getElementById("reading-progress");
+    if (!bar) return;
+
+    function update() {
+      const scrollable =
+        document.documentElement.scrollHeight - window.innerHeight;
+      if (scrollable <= 0) {
+        bar!.style.width = "0%";
+        return;
+      }
+      const pct = Math.min((window.scrollY / scrollable) * 100, 100);
+      bar!.style.width = `${pct}%`;
+      bar!.setAttribute("aria-valuenow", String(Math.round(pct)));
+    }
+
+    window.addEventListener("scroll", update, { passive: true });
+    update();
+  }
+
+  setupProgress();
+  document.addEventListener("astro:after-swap", setupProgress);
+</script>

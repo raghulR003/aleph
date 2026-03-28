@@ -1,0 +1,68 @@
+---
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import Header from "@/components/Header.astro";
+import Footer from "@/components/Footer.astro";
+import PostCard from "@/components/PostCard.astro";
+import { getCollection } from "astro:content";
+import { getSortedPosts, getAllTags } from "@/utils/posts";
+
+export async function getStaticPaths() {
+  const allPosts = await getCollection("blog");
+  const tags = getAllTags(allPosts);
+
+  return [...tags.keys()].map((tag) => ({
+    params: { tag: tag.toLowerCase() },
+    props: { tag },
+  }));
+}
+
+const { tag } = Astro.props;
+const allPosts = await getCollection("blog");
+const tagPosts = getSortedPosts(
+  allPosts.filter((post) =>
+    post.data.tags.some((t) => t.toLowerCase() === tag.toLowerCase())
+  )
+);
+---
+
+<BaseLayout title={`${tag} — aleph.`}>
+  <Header />
+
+  <main class="max-w-wide mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <header class="mb-12">
+      <a
+        href="/tags"
+        class="inline-flex items-center gap-1 text-sm text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors mb-4"
+      >
+        &larr; All tags
+      </a>
+      <h1
+        class="font-heading font-extrabold text-4xl text-text-primary dark:text-text-primary-dark mb-2"
+      >
+        #{tag}
+      </h1>
+      <p class="text-lg text-text-secondary dark:text-text-secondary-dark">
+        {tagPosts.length} {tagPosts.length === 1 ? "post" : "posts"} tagged with "{tag}"
+      </p>
+    </header>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {
+        tagPosts.map((post) => (
+          <PostCard
+            title={post.data.title}
+            description={post.data.description}
+            pubDate={post.data.pubDate}
+            slug={post.slug}
+            coverImage={post.data.coverImage}
+            coverAlt={post.data.coverAlt}
+            tags={post.data.tags}
+            body={post.body || ""}
+          />
+        ))
+      }
+    </div>
+  </main>
+
+  <Footer />
+</BaseLayout>

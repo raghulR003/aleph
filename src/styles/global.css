@@ -1,0 +1,202 @@
+/* ============================================
+   FONT IMPORTS — Google Fonts
+   @import MUST precede all other statements
+   (Using Google Fonts by design)
+   ============================================ */
+@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================
+   BASE LAYER — Theme tokens via CSS custom props
+   ============================================ */
+@layer base {
+  :root {
+    /* Surfaces */
+    --color-surface: #ffffff;
+    --color-surface-card: #f8fafc;
+    --color-surface-hover: #f1f5f9;
+
+    /* Text */
+    --color-text-primary: #1e293b;
+    --color-text-secondary: #64748b;
+    --color-text-muted: #94a3b8;
+
+    /* Accent */
+    --color-accent: #3b82f6;
+    --color-accent-hover: #2563eb;
+
+    /* Border */
+    --color-border: #e2e8f0;
+
+    /* Shadows */
+    --shadow-card: 0 4px 6px -1px rgba(0, 0, 0, 0.07),
+      0 2px 4px -2px rgba(0, 0, 0, 0.05);
+    --shadow-card-hover: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
+      0 8px 10px -6px rgba(0, 0, 0, 0.04);
+
+    color-scheme: light;
+  }
+
+  .dark {
+    --color-surface: #0f172a;
+    --color-surface-card: #1e293b;
+    --color-surface-hover: #334155;
+
+    --color-text-primary: #e2e8f0;
+    --color-text-secondary: #94a3b8;
+    --color-text-muted: #64748b;
+
+    --color-accent: #60a5fa;
+    --color-accent-hover: #93c5fd;
+
+    --color-border: #334155;
+
+    /* Dark mode: elevation layers instead of shadows */
+    --shadow-card: 0 0 0 1px rgba(148, 163, 184, 0.1);
+    --shadow-card-hover: 0 0 0 1px rgba(148, 163, 184, 0.2),
+      0 4px 12px rgba(0, 0, 0, 0.3);
+
+    color-scheme: dark;
+  }
+
+  /* Smooth transitions for theme toggle */
+  html {
+    transition-property: background-color, color;
+    transition-duration: 200ms;
+    transition-timing-function: ease-in-out;
+  }
+
+  body {
+    font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    background-color: var(--color-surface);
+    color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Prevent FOUC for dark mode — handled by inline script in <head> */
+  html:not(.dark):not(.light) {
+    visibility: hidden;
+  }
+
+  /* Selection styling */
+  ::selection {
+    background-color: rgba(59, 130, 246, 0.2);
+    color: var(--color-text-primary);
+  }
+  .dark ::selection {
+    background-color: rgba(96, 165, 250, 0.3);
+  }
+}
+
+/* ============================================
+   COMPONENT LAYER
+   ============================================ */
+@layer components {
+  /* Reading progress bar */
+  .reading-progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--color-accent), #8b5cf6);
+    z-index: 100;
+    width: 0%;
+    transition: width 100ms linear;
+  }
+
+  /* Tag pills */
+  .tag-pill {
+    @apply inline-flex items-center px-3 py-1 rounded-pill text-sm font-ui font-medium
+      bg-surface-card dark:bg-surface-card-dark
+      text-text-secondary dark:text-text-secondary-dark
+      border border-border dark:border-border-dark
+      hover:bg-surface-hover dark:hover:bg-surface-hover-dark
+      transition-colors duration-150;
+  }
+
+  /* Post card */
+  .post-card {
+    @apply bg-white dark:bg-surface-card-dark rounded-card
+      border border-border dark:border-border-dark
+      overflow-hidden transition-all duration-200;
+    box-shadow: var(--shadow-card);
+  }
+  .post-card:hover {
+    box-shadow: var(--shadow-card-hover);
+    transform: translateY(-2px);
+  }
+
+  /* Article prose wrapper */
+  .article-content {
+    @apply prose prose-lg dark:prose-invert mx-auto;
+    max-width: 43.75rem;
+  }
+
+  .mdx-callout-content > :first-child,
+  .comparison-panel > :first-child {
+    margin-top: 0;
+  }
+
+  .mdx-callout-content > :last-child,
+  .comparison-panel > :last-child {
+    margin-bottom: 0;
+  }
+
+  .comparison-panel :where(ul, ol) {
+    padding-left: 1.25rem;
+  }
+
+  .timeline-root .timeline-item:last-child > div:nth-child(2) {
+    display: none;
+  }
+}
+
+/* ============================================
+   UTILITY OVERRIDES
+   ============================================ */
+@layer utilities {
+  /* Scrollbar styling */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background-color: var(--color-text-muted);
+    border-radius: 9999px;
+  }
+
+  /* Hide scrollbar utility */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  /* Text balance for headings */
+  .text-balance {
+    text-wrap: balance;
+  }
+}
+
+/* ============================================
+   PAGEFIND OVERRIDES
+   ============================================ */
+:root {
+  --pagefind-ui-scale: 0.9;
+  --pagefind-ui-primary: var(--color-accent);
+  --pagefind-ui-text: var(--color-text-primary);
+  --pagefind-ui-background: var(--color-surface);
+  --pagefind-ui-border: var(--color-border);
+  --pagefind-ui-tag: var(--color-surface-card);
+  --pagefind-ui-border-width: 1px;
+  --pagefind-ui-border-radius: 0.5rem;
+  --pagefind-ui-font: "Inter", system-ui, sans-serif;
+}

@@ -1,0 +1,70 @@
+---
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import Header from "@/components/Header.astro";
+import Footer from "@/components/Footer.astro";
+import { getCollection } from "astro:content";
+import { getAllSeries, getSeriesPosts } from "@/utils/posts";
+
+export async function getStaticPaths() {
+  const allPosts = await getCollection("blog");
+  const series = getAllSeries(allPosts);
+
+  return [...series.keys()].map((name) => ({
+    params: { series: name.toLowerCase().replace(/\s+/g, "-") },
+    props: { seriesName: name },
+  }));
+}
+
+const { seriesName } = Astro.props;
+const allPosts = await getCollection("blog");
+const seriesPosts = getSeriesPosts(seriesName, allPosts);
+---
+
+<BaseLayout title={`${seriesName} Series — aleph.`}>
+  <Header />
+
+  <main class="max-w-wide mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <header class="mb-12">
+      <a
+        href="/tags"
+        class="inline-flex items-center gap-1 text-sm text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors mb-4"
+      >
+        &larr; All tags & series
+      </a>
+      <h1
+        class="font-heading font-extrabold text-4xl text-text-primary dark:text-text-primary-dark mb-2"
+      >
+        {seriesName}
+      </h1>
+      <p class="text-lg text-text-secondary dark:text-text-secondary-dark">
+        A {seriesPosts.length}-part series. Read in order for the best experience.
+      </p>
+    </header>
+
+    {/* Ordered series list */}
+    <div class="max-w-3xl space-y-4">
+      {
+        seriesPosts.map((post, index) => (
+          <a
+            href={`/blog/${post.slug}`}
+            class="flex items-start gap-4 p-5 rounded-card border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark hover:bg-surface-hover dark:hover:bg-surface-hover-dark transition-colors group"
+          >
+            <span class="flex-shrink-0 w-10 h-10 flex items-center justify-center rounded-pill bg-accent/10 dark:bg-accent-dark/10 text-accent dark:text-accent-dark font-heading font-bold text-sm">
+              {index + 1}
+            </span>
+            <div>
+              <h2 class="font-heading font-semibold text-lg text-text-primary dark:text-text-primary-dark group-hover:text-accent dark:group-hover:text-accent-dark transition-colors leading-snug">
+                {post.data.title}
+              </h2>
+              <p class="text-sm text-text-secondary dark:text-text-secondary-dark mt-1 line-clamp-2">
+                {post.data.description}
+              </p>
+            </div>
+          </a>
+        ))
+      }
+    </div>
+  </main>
+
+  <Footer />
+</BaseLayout>

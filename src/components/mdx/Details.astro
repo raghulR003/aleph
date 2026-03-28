@@ -1,0 +1,17 @@
+---
+interface Props {
+  summary: string;
+  open?: boolean;
+}
+
+const { summary, open = false } = Astro.props;
+---
+
+<details class="my-6 rounded-card border border-border dark:border-border-dark px-5 py-4" open={open}>
+  <summary class="cursor-pointer list-none font-medium text-text-primary dark:text-text-primary-dark">
+    {summary}
+  </summary>
+  <div class="mt-4 text-text-secondary dark:text-text-secondary-dark leading-7">
+    <slot />
+  </div>
+</details>

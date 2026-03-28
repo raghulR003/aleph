@@ -1,0 +1,89 @@
+---
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import Header from "@/components/Header.astro";
+import Footer from "@/components/Footer.astro";
+import HeroPost from "@/components/HeroPost.astro";
+import PostCard from "@/components/PostCard.astro";
+import { getCollection } from "astro:content";
+import { getSortedPosts } from "@/utils/posts";
+
+const allPosts = await getCollection("blog");
+const sortedPosts = getSortedPosts(allPosts);
+const [heroPost, ...restPosts] = sortedPosts;
+---
+
+<BaseLayout title="aleph. — Technical Writing on Software Engineering">
+  <Header />
+
+  <main class="max-w-wide mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    {/* Hero section */}
+    {
+      heroPost && (
+        <section class="mb-12">
+          <HeroPost
+            title={heroPost.data.title}
+            description={heroPost.data.description}
+            pubDate={heroPost.data.pubDate}
+            slug={heroPost.slug}
+            coverImage={heroPost.data.coverImage}
+            coverAlt={heroPost.data.coverAlt}
+            tags={heroPost.data.tags}
+            body={heroPost.body || ""}
+          />
+        </section>
+      )
+    }
+
+    {/* Latest posts grid */}
+    {
+      restPosts.length > 0 && (
+        <section>
+          <div class="flex items-center justify-between mb-8">
+            <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark">
+              Latest Posts
+            </h2>
+            <a
+              href="/tags"
+              class="text-sm font-medium text-accent dark:text-accent-dark hover:underline"
+            >
+              Browse by tag &rarr;
+            </a>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {restPosts.map((post) => (
+              <PostCard
+                title={post.data.title}
+                description={post.data.description}
+                pubDate={post.data.pubDate}
+                slug={post.slug}
+                coverImage={post.data.coverImage}
+                coverAlt={post.data.coverAlt}
+                tags={post.data.tags}
+                body={post.body || ""}
+              />
+            ))}
+          </div>
+        </section>
+      )
+    }
+
+    {/* Empty state */}
+    {
+      sortedPosts.length === 0 && (
+        <section class="text-center py-20">
+          <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark mb-4">
+            No posts yet
+          </h2>
+          <p class="text-text-secondary dark:text-text-secondary-dark">
+            Add your first post in{" "}
+            <code class="px-2 py-1 rounded bg-surface-card dark:bg-surface-card-dark text-sm font-mono">
+              src/content/blog/
+            </code>
+          </p>
+        </section>
+      )
+    }
+  </main>
+
+  <Footer />
+</BaseLayout>

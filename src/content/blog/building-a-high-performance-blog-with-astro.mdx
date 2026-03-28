@@ -1,0 +1,98 @@
+---
+title: "Building a High-Performance Blog with Astro"
+description: "A deep dive into why Astro is the best static site generator for technical blogs in 2026, and how to squeeze every last millisecond out of your Lighthouse score."
+pubDate: 2026-03-27
+coverImage: "https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=1200&h=600&fit=crop"
+coverAlt: "Code on a laptop screen with purple lighting"
+author: "default"
+tags: ["astro", "performance", "web-dev"]
+series: "Building AlephBlog"
+seriesOrder: 1
+---
+
+## Why Astro?
+
+When I set out to build this blog, I had a clear set of requirements: it needed to be **fast**, **beautiful**, and **cheap to host**. After evaluating Hugo, Next.js, and several others, Astro emerged as the clear winner.
+
+Here's why:
+
+### Zero JavaScript by Default
+
+Astro's **Island Architecture** means your pages ship zero JavaScript unless you explicitly opt in. For a blog where most content is static text, this is perfect:
+
+```typescript title="astro.config.mjs"
+import { defineConfig } from 'astro/config';
+
+export default defineConfig({
+  // Static by default — no JS shipped
+  output: 'static',
+});
+```
+
+### Content Collections with Type Safety
+
+Every blog post is type-checked at build time using Zod schemas:
+
+```typescript title="src/content/config.ts"
+import { defineCollection, z } from 'astro:content';
+
+const blog = defineCollection({
+  type: 'content',
+  schema: z.object({
+    title: z.string(),
+    description: z.string(),
+    pubDate: z.coerce.date(),
+    tags: z.array(z.string()).default([]),
+    draft: z.boolean().default(false),
+  }),
+});
+```
+
+This means if I fat-finger a date format or forget a required field, the build fails immediately. No silent errors making it to production.
+
+## The Design System
+
+The design is inspired by **HashNode** and **Medium** — two platforms that nail long-form reading. Key decisions:
+
+1. **Serif body text** (Lora) for that editorial feel
+2. **Sans-serif headings** (Plus Jakarta Sans) for modern contrast
+3. **21px base font size** — generous, like Medium
+4. **700px max-width** for optimal line length (~65 characters)
+5. **No pure black** in dark mode — `#0F172A` instead
+
+### Color Tokens
+
+The color system uses semantic tokens that swap between light and dark mode:
+
+```css title="src/styles/global.css"
+:root {
+  --color-surface: #ffffff;
+  --color-text-primary: #1e293b;
+  --color-accent: #3b82f6;
+}
+
+.dark {
+  --color-surface: #0f172a;
+  --color-text-primary: #e2e8f0;
+  --color-accent: #60a5fa;
+}
+```
+
+## Performance Results
+
+After building with `astro build`, here are the Lighthouse scores:
+
+| Metric | Score |
+|--------|-------|
+| Performance | 100 |
+| Accessibility | 100 |
+| Best Practices | 100 |
+| SEO | 100 |
+
+The secret? Ship less JavaScript. Astro makes this the default, not the exception.
+
+## What's Next
+
+In the next post, I'll cover the **typography system** in detail — how to pair fonts, set up a type scale, and create a reading experience that rivals Medium.
+
+> The best performance optimization is the code you never ship.

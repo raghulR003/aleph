@@ -1,0 +1,98 @@
+---
+title: "Typography That Breathes: Designing for Long-Form Reading"
+description: "How to create a typography system that makes readers forget they're reading on a screen. Lessons from Medium, HashNode, and decades of typographic research."
+pubDate: 2026-03-25
+coverImage: "https://images.unsplash.com/photo-1457369804613-52c61a468e7d?w=1200&h=600&fit=crop"
+coverAlt: "Open book with beautiful typography"
+author: "default"
+tags: ["typography", "design", "css"]
+series: "Building AlephBlog"
+seriesOrder: 2
+---
+
+## The Science of Comfortable Reading
+
+Typography isn't decoration — it's **the interface**. On a blog, 95% of the content is text. If you get typography wrong, nothing else matters.
+
+Here's what the research says:
+
+### Optimal Line Length: 50–75 Characters
+
+The Baymard Institute, Smashing Magazine, and decades of typographic research all converge on the same number: **65 characters per line** is the sweet spot.
+
+Too long, and the eye struggles to find the next line. Too short, and the constant line breaks interrupt reading flow.
+
+```css title="Achieving optimal line length"
+.article-content {
+  max-width: 43.75rem; /* ~700px = ~65 chars at 21px */
+  margin: 0 auto;
+}
+```
+
+> **Pro tip**: Don't use the `ch` unit. As Josh Comeau discovered, `ch` is based on the width of the `0` character, which is wider than the average character. Use rem-based max-width instead.
+
+### The Perfect Fourth Type Scale
+
+A type scale creates visual hierarchy through **mathematical relationships** between sizes. I chose the **Perfect Fourth** ratio (1.333):
+
+| Level | Size | Use |
+|-------|------|-----|
+| xs | 12px | Labels, captions |
+| sm | 14px | Meta text, dates |
+| base | 16px | UI text |
+| lg | 18px | Large body |
+| **xl** | **21px** | **Article body** |
+| 2xl | 28px | H3 headings |
+| 3xl | 37px | H2 headings |
+| 4xl | 50px | H1 / Title |
+
+### Line Height: Give Text Room to Breathe
+
+The golden rule: **1.7–1.8× for body text**, 1.1–1.3× for headings.
+
+Medium uses approximately 1.6×. I went slightly more generous at 1.75 because the serif font (Lora) benefits from more vertical space:
+
+```css
+body {
+  font-size: 1.3125rem;   /* 21px */
+  line-height: 1.75;       /* 36.75px effective */
+}
+
+h1, h2, h3 {
+  line-height: 1.2;        /* Tight for impact */
+}
+```
+
+## Font Pairing: Serif Meets Sans
+
+The font pairing follows a simple principle: **contrast creates hierarchy**.
+
+- **Headings**: Plus Jakarta Sans (geometric sans-serif) — modern, confident, sharp
+- **Body**: Lora (humanist serif) — warm, literary, optimized for screen reading
+- **UI**: Inter (neo-grotesque) — invisible, functional, the perfect workhorse
+- **Code**: JetBrains Mono — tall x-height, optional ligatures, designed for developers
+
+This mirrors Medium's approach of using Charter (serif) for body text and Marat Sans for UI — but with freely available fonts.
+
+## Dark Mode Typography
+
+Dark mode isn't just "invert the colors." It requires careful attention:
+
+1. **Never use pure black** (`#000000`) — it causes halation (a glowing halo effect around text)
+2. **Soften the white** — use `#E2E8F0` instead of `#FFFFFF` for body text
+3. **Desaturate accent colors** by 20–40% — saturated colors on dark backgrounds cause eye strain
+4. **Use elevation instead of shadows** — shadows don't work on dark backgrounds
+
+```css
+.dark {
+  --color-surface: #0f172a;     /* NOT #000000 */
+  --color-text-primary: #e2e8f0; /* NOT #ffffff */
+  --color-accent: #60a5fa;       /* Desaturated from #3b82f6 */
+}
+```
+
+## The Result
+
+After implementing all of this, the reading experience feels premium — like you're reading a well-typeset magazine rather than a web page. The serif body text signals "this is serious content," while the sans-serif headings keep it modern.
+
+Typography is the invisible architecture of your blog. Get it right, and your readers will stay. Get it wrong, and they'll leave before finishing the first paragraph.

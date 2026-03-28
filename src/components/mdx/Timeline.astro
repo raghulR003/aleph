@@ -1,0 +1,20 @@
+---
+interface Props {
+  title?: string;
+}
+
+const { title } = Astro.props;
+---
+
+<section class="my-10">
+  {
+    title && (
+      <h3 class="mb-5 font-heading text-xl font-semibold text-text-primary dark:text-text-primary-dark">
+        {title}
+      </h3>
+    )
+  }
+  <div class="timeline-root">
+    <slot />
+  </div>
+</section>

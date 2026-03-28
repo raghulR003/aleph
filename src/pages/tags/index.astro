@@ -1,0 +1,64 @@
+---
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import Header from "@/components/Header.astro";
+import Footer from "@/components/Footer.astro";
+import TagPill from "@/components/TagPill.astro";
+import { getCollection } from "astro:content";
+import { getAllTags, getAllSeries } from "@/utils/posts";
+
+const allPosts = await getCollection("blog");
+const tags = getAllTags(allPosts);
+const series = getAllSeries(allPosts);
+---
+
+<BaseLayout title="Tags — aleph.">
+  <Header />
+
+  <main class="max-w-wide mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <header class="mb-12">
+      <h1 class="font-heading font-extrabold text-4xl text-text-primary dark:text-text-primary-dark mb-4">
+        Tags
+      </h1>
+      <p class="text-lg text-text-secondary dark:text-text-secondary-dark">
+        Browse all topics. {tags.size} tags across {allPosts.filter(p => !p.data.draft).length} posts.
+      </p>
+    </header>
+
+    <section class="mb-16">
+      <div class="flex flex-wrap gap-3">
+        {
+          [...tags.entries()].map(([tag, count]) => (
+            <TagPill tag={tag} count={count} size="lg" />
+          ))
+        }
+      </div>
+    </section>
+
+    {
+      series.size > 0 && (
+        <section>
+          <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark mb-6">
+            Series
+          </h2>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[...series.entries()].map(([name, count]) => (
+              <a
+                href={`/series/${name.toLowerCase().replace(/\s+/g, "-")}`}
+                class="p-5 rounded-card border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark hover:bg-surface-hover dark:hover:bg-surface-hover-dark transition-colors group"
+              >
+                <h3 class="font-heading font-semibold text-lg text-text-primary dark:text-text-primary-dark group-hover:text-accent dark:group-hover:text-accent-dark transition-colors">
+                  {name}
+                </h3>
+                <p class="text-sm text-text-secondary dark:text-text-secondary-dark mt-1">
+                  {count} {count === 1 ? "post" : "posts"} in series
+                </p>
+              </a>
+            ))}
+          </div>
+        </section>
+      )
+    }
+  </main>
+
+  <Footer />
+</BaseLayout>

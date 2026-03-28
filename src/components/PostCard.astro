@@ -1,0 +1,65 @@
+---
+import { formatDate, getReadingTime } from "@/utils/posts";
+
+interface Props {
+  title: string;
+  description: string;
+  pubDate: Date;
+  slug: string;
+  coverImage?: string;
+  coverAlt?: string;
+  tags?: string[];
+  body?: string;
+}
+
+const { title, description, pubDate, slug, coverImage, coverAlt, tags = [], body = "" } = Astro.props;
+const readingTime = getReadingTime(body);
+---
+
+<article class="post-card group">
+  <a href={`/blog/${slug}`} class="block">
+    {
+      coverImage && (
+        <div class="aspect-[16/9] overflow-hidden">
+          <img
+            src={coverImage}
+            alt={coverAlt || title}
+            class="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+            loading="lazy"
+            decoding="async"
+          />
+        </div>
+      )
+    }
+    <div class="p-5">
+      {
+        tags.length > 0 && (
+          <div class="flex flex-wrap gap-2 mb-3">
+            {tags.slice(0, 3).map((tag) => (
+              <span class="inline-block px-2 py-0.5 text-xs font-medium rounded-tag bg-accent/10 dark:bg-accent-dark/10 text-accent dark:text-accent-dark">
+                {tag}
+              </span>
+            ))}
+          </div>
+        )
+      }
+      <h2
+        class="font-heading font-bold text-lg leading-snug text-text-primary dark:text-text-primary-dark group-hover:text-accent dark:group-hover:text-accent-dark transition-colors mb-2"
+      >
+        {title}
+      </h2>
+      <p
+        class="text-sm text-text-secondary dark:text-text-secondary-dark line-clamp-2 mb-3"
+      >
+        {description}
+      </p>
+      <div
+        class="flex items-center gap-3 text-xs text-text-muted dark:text-text-muted-dark"
+      >
+        <time datetime={pubDate.toISOString()}>{formatDate(pubDate)}</time>
+        <span class="w-1 h-1 rounded-full bg-text-muted dark:bg-text-muted-dark"></span>
+        <span>{readingTime}</span>
+      </div>
+    </div>
+  </a>
+</article>

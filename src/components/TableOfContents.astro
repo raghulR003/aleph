@@ -1,0 +1,86 @@
+---
+interface Heading {
+  depth: number;
+  slug: string;
+  text: string;
+}
+
+interface Props {
+  headings: Heading[];
+}
+
+const { headings } = Astro.props;
+const toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+
+if (toc.length === 0) return null;
+---
+
+<nav
+  id="toc"
+  class="hidden xl:block sticky top-24 w-48 max-h-[calc(100vh-8rem)] overflow-y-auto custom-scrollbar"
+  aria-label="Table of Contents"
+>
+  <h3
+    class="font-heading font-semibold text-[11px] uppercase tracking-[0.18em] text-text-muted dark:text-text-muted-dark mb-3"
+  >
+    On this page
+  </h3>
+  <ul class="space-y-1 border-l-2 border-border dark:border-border-dark">
+    {
+      toc.map((heading) => (
+        <li
+          style={`padding-left: ${(heading.depth - 2) * 0.75 + 0.75}rem`}
+          class="relative"
+        >
+          <a
+            href={`#${heading.slug}`}
+            data-toc-link
+            class="block py-1 text-[0.8125rem] text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors duration-150 leading-snug
+              aria-[current=true]:text-accent aria-[current=true]:dark:text-accent-dark aria-[current=true]:font-medium
+              before:absolute before:left-[-2px] before:top-0 before:bottom-0 before:w-0.5 before:bg-transparent before:transition-colors
+              aria-[current=true]:before:bg-accent aria-[current=true]:dark:before:bg-accent-dark"
+          >
+            {heading.text}
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+</nav>
+
+<script>
+  function setupScrollspy() {
+    const tocLinks = document.querySelectorAll("[data-toc-link]");
+    if (tocLinks.length === 0) return;
+
+    const headingElements = document.querySelectorAll("article :is(h2, h3)");
+    if (headingElements.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            const id = entry.target.id;
+            tocLinks.forEach((link) => {
+              const href = link.getAttribute("href");
+              if (href === `#${id}`) {
+                link.setAttribute("aria-current", "true");
+              } else {
+                link.removeAttribute("aria-current");
+              }
+            });
+          }
+        }
+      },
+      {
+        rootMargin: "0px 0px -70% 0px",
+        threshold: 1.0,
+      }
+    );
+
+    headingElements.forEach((el) => observer.observe(el));
+  }
+
+  setupScrollspy();
+  document.addEventListener("astro:after-swap", setupScrollspy);
+</script>

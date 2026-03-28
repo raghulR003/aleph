@@ -1,0 +1,189 @@
+---
+import BaseLayout from "./BaseLayout.astro";
+import Header from "@/components/Header.astro";
+import Footer from "@/components/Footer.astro";
+import ReadingProgress from "@/components/ReadingProgress.astro";
+import AuthorByline from "@/components/AuthorByline.astro";
+import TableOfContents from "@/components/TableOfContents.astro";
+import RelatedPosts from "@/components/RelatedPosts.astro";
+import TagPill from "@/components/TagPill.astro";
+import type { CollectionEntry } from "astro:content";
+
+interface Props {
+  post: CollectionEntry<"blog">;
+  headings: { depth: number; slug: string; text: string }[];
+  relatedPosts?: CollectionEntry<"blog">[];
+  authorName?: string;
+  authorAvatar?: string;
+}
+
+const {
+  post,
+  headings,
+  relatedPosts = [],
+  authorName = "Author",
+  authorAvatar = "/images/avatar-default.svg",
+} = Astro.props;
+---
+
+<BaseLayout
+  title={`${post.data.title} — aleph.`}
+  description={post.data.description}
+  ogImage={post.data.ogImage || "/images/og-default.svg"}
+  ogType="article"
+>
+  <ReadingProgress />
+  <Header />
+
+  <main class="max-w-wide mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    {/* Cover image */}
+    {
+      post.data.coverImage && (
+        <div class="max-w-4xl mx-auto mb-8 rounded-card overflow-hidden">
+          <img
+            src={post.data.coverImage}
+            alt={post.data.coverAlt || post.data.title}
+            class="w-full aspect-[2/1] object-cover"
+            loading="eager"
+          />
+        </div>
+      )
+    }
+
+    <div class="mx-auto max-w-[1120px] xl:grid xl:grid-cols-[minmax(0,45rem)_12rem] xl:gap-14 2xl:gap-16 xl:items-start">
+      {/* Article header */}
+      <header class="max-w-article mx-auto mb-10 xl:mx-0 xl:max-w-none">
+        {
+          post.data.tags.length > 0 && (
+            <div class="flex flex-wrap gap-2 mb-4">
+              {post.data.tags.map((tag) => (
+                <TagPill tag={tag} size="sm" />
+              ))}
+            </div>
+          )
+        }
+
+        <h1
+          class="font-heading font-extrabold text-3xl sm:text-4xl lg:text-4xl leading-tight tracking-tight text-text-primary dark:text-text-primary-dark mb-6 text-balance"
+        >
+          {post.data.title}
+        </h1>
+
+        {
+          post.data.series && (
+            <div class="mb-6 px-4 py-3 rounded-card bg-surface-card dark:bg-surface-card-dark border border-border dark:border-border-dark">
+              <span class="text-sm text-text-secondary dark:text-text-secondary-dark">
+                Part of the series:{" "}
+                <a
+                  href={`/series/${post.data.series.toLowerCase().replace(/\s+/g, "-")}`}
+                  class="font-medium text-accent dark:text-accent-dark hover:underline"
+                >
+                  {post.data.series}
+                </a>
+              </span>
+            </div>
+          )
+        }
+
+        <AuthorByline
+          authorName={authorName}
+          authorAvatar={authorAvatar}
+          pubDate={post.data.pubDate}
+          updatedDate={post.data.updatedDate}
+          body={post.body || ""}
+        />
+      </header>
+
+      {/* Sticky TOC sidebar */}
+      <aside class="hidden xl:block xl:row-span-3 xl:min-w-0">
+        <TableOfContents headings={headings} />
+      </aside>
+
+      {/* Main content */}
+      <article
+        class="article-content w-full max-w-article mx-auto xl:mx-0 xl:max-w-none xl:min-w-0"
+        data-pagefind-body
+      >
+        <slot />
+      </article>
+
+      {/* Post footer */}
+      <div class="max-w-article mx-auto xl:mx-0 xl:max-w-none">
+      {/* Tags */}
+      {
+        post.data.tags.length > 0 && (
+          <div class="mt-12 pt-8 border-t border-border dark:border-border-dark">
+            <div class="flex flex-wrap gap-2">
+              {post.data.tags.map((tag) => (
+                <TagPill tag={tag} size="md" />
+              ))}
+            </div>
+          </div>
+        )
+      }
+
+      {/* Related Posts */}
+      <RelatedPosts posts={relatedPosts} />
+
+      {/* Lightweight discussion prompt */}
+      <section class="mt-16 pt-10 border-t border-border dark:border-border-dark">
+        <h2
+          class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark mb-8"
+        >
+          Discussion
+        </h2>
+        <div class="rounded-card border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark p-6">
+          <p class="text-text-secondary dark:text-text-secondary-dark leading-relaxed">
+            I’m keeping discussion intentionally lightweight. If this post sparked an idea,
+            save a note, share the link with your own commentary, or start a follow-up post.
+          </p>
+          <div class="mt-4 flex flex-wrap gap-3">
+            <button
+              id="copy-article-link"
+              type="button"
+              class="inline-flex items-center justify-center rounded-card bg-accent dark:bg-accent-dark px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover dark:hover:bg-accent-hover-dark"
+            >
+              Copy article link
+            </button>
+            <a
+              href="/tags"
+              class="inline-flex items-center justify-center rounded-card border border-border dark:border-border-dark px-4 py-2 text-sm font-medium text-text-primary dark:text-text-primary-dark transition-colors hover:bg-surface-hover dark:hover:bg-surface-hover-dark"
+            >
+              Explore more topics
+            </a>
+          </div>
+          <p
+            id="copy-article-link-status"
+            class="mt-3 text-sm text-text-muted dark:text-text-muted-dark"
+            aria-live="polite"
+          ></p>
+        </div>
+      </section>
+      </div>
+    </div>
+  </main>
+
+  <Footer />
+</BaseLayout>
+
+<script>
+  function setupCopyArticleLink() {
+    const button = document.getElementById("copy-article-link");
+    const status = document.getElementById("copy-article-link-status");
+
+    if (!button || !status || button.dataset.bound === "true") return;
+
+    button.dataset.bound = "true";
+    button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(window.location.href);
+        status.textContent = "Article link copied.";
+      } catch {
+        status.textContent = "Couldn’t copy automatically. Copy the URL from your browser bar.";
+      }
+    });
+  }
+
+  setupCopyArticleLink();
+  document.addEventListener("astro:after-swap", setupCopyArticleLink);
+</script>

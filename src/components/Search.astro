@@ -1,0 +1,57 @@
+---
+// Search page component — uses Pagefind
+// Pagefind files are generated AFTER build, so we can't use ES imports.
+// Instead, we load the script dynamically at runtime.
+---
+
+<div class="w-full max-w-2xl mx-auto">
+  <div id="search" class="pagefind-ui"></div>
+</div>
+
+<script is:inline>
+  function initSearch() {
+    if (window.__pagefindUI) return;
+    
+    // Dynamically load Pagefind CSS
+    if (!document.querySelector('link[href="/pagefind/pagefind-ui.css"]')) {
+      var link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = "/pagefind/pagefind-ui.css";
+      document.head.appendChild(link);
+    }
+
+    // Dynamically load Pagefind JS
+    var script = document.createElement("script");
+    script.src = "/pagefind/pagefind-ui.js";
+    script.onload = function () {
+      window.__pagefindUI = new PagefindUI({
+        element: "#search",
+        showImages: true,
+        showSubResults: true,
+        resetStyles: false,
+      });
+    };
+    script.onerror = function () {
+      var el = document.getElementById("search");
+      if (el) {
+        el.innerHTML =
+          '<div class="text-center py-12 text-text-secondary dark:text-text-secondary-dark">' +
+          '<p class="text-lg mb-2">Search is available after building</p>' +
+          '<p class="text-sm">Run <code class="px-2 py-1 rounded bg-surface-card dark:bg-surface-card-dark text-sm font-mono">npm run build</code> then <code class="px-2 py-1 rounded bg-surface-card dark:bg-surface-card-dark text-sm font-mono">npm run preview</code></p>' +
+          "</div>";
+      }
+    };
+    document.head.appendChild(script);
+  }
+
+  // Initialize on load and on View Transitions page swap
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initSearch);
+  } else {
+    initSearch();
+  }
+  document.addEventListener("astro:after-swap", function () {
+    window.__pagefindUI = null;
+    initSearch();
+  });
+</script>

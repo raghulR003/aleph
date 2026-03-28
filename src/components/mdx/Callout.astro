@@ -1,0 +1,45 @@
+---
+interface Props {
+  type?: "note" | "tip" | "warning" | "success";
+  title?: string;
+}
+
+const { type = "note", title } = Astro.props;
+
+const styles = {
+  note: {
+    label: title || "Note",
+    className:
+      "border-blue-200 bg-blue-50 text-slate-800 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-slate-100",
+    icon: "ℹ",
+  },
+  tip: {
+    label: title || "Tip",
+    className:
+      "border-emerald-200 bg-emerald-50 text-slate-800 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-slate-100",
+    icon: "✦",
+  },
+  warning: {
+    label: title || "Warning",
+    className:
+      "border-amber-200 bg-amber-50 text-slate-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-slate-100",
+    icon: "⚠",
+  },
+  success: {
+    label: title || "Success",
+    className:
+      "border-teal-200 bg-teal-50 text-slate-800 dark:border-teal-900/60 dark:bg-teal-950/30 dark:text-slate-100",
+    icon: "✓",
+  },
+}[type];
+---
+
+<aside class={`my-8 rounded-card border px-5 py-4 ${styles.className}`}>
+  <div class="mb-2 flex items-center gap-2 text-sm font-semibold uppercase tracking-wide opacity-90">
+    <span aria-hidden="true">{styles.icon}</span>
+    <span>{styles.label}</span>
+  </div>
+  <div class="mdx-callout-content text-[0.98rem] leading-7">
+    <slot />
+  </div>
+</aside>

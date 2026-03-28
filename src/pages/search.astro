@@ -1,0 +1,27 @@
+---
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import Header from "@/components/Header.astro";
+import Footer from "@/components/Footer.astro";
+import Search from "@/components/Search.astro";
+---
+
+<BaseLayout title="Search — aleph.">
+  <Header />
+
+  <main class="max-w-wide mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <header class="mb-12 text-center">
+      <h1
+        class="font-heading font-extrabold text-4xl text-text-primary dark:text-text-primary-dark mb-4"
+      >
+        Search
+      </h1>
+      <p class="text-lg text-text-secondary dark:text-text-secondary-dark">
+        Find posts by keyword, topic, or code snippet.
+      </p>
+    </header>
+
+    <Search />
+  </main>
+
+  <Footer />
+</BaseLayout>
