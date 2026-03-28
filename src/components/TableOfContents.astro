@@ -16,58 +16,61 @@ const toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
 if (toc.length === 0) return null;
 ---
 
-<nav
-  id="toc"
-  class:list={[
-    "hidden xl:block w-48 max-h-[calc(100vh-6rem)] overflow-y-auto custom-scrollbar rounded-card border border-border dark:border-border-dark bg-surface-card/70 dark:bg-surface-card-dark/70 backdrop-blur-sm p-4",
-    sticky ? "sticky top-20" : "",
-  ]}
-  aria-label="Table of Contents"
+<div
+  class:list={["hidden xl:block w-48", sticky ? "sticky top-20" : ""]}
 >
-  <div class="mb-4">
-    <div class="mb-3 flex items-center justify-between gap-2">
-      <h3
-        class="font-heading font-semibold text-[11px] uppercase tracking-[0.18em] text-text-muted dark:text-text-muted-dark"
-      >
-        On this page
-      </h3>
-      <span
-        id="toc-progress-label"
-        class="text-[11px] font-medium text-text-muted dark:text-text-muted-dark"
-      >
-        0%
-      </span>
-    </div>
-    <div class="h-1 overflow-hidden rounded-full bg-border dark:bg-border-dark">
-      <div
-        id="toc-progress-bar"
-        class="h-full w-0 rounded-full bg-accent dark:bg-accent-dark transition-[width] duration-150"
-      ></div>
-    </div>
-  </div>
-
-  <ul class="space-y-1 border-l-2 border-border dark:border-border-dark">
-    {
-      toc.map((heading) => (
-        <li
-          style={`padding-left: ${(heading.depth - 2) * 0.75 + 0.75}rem`}
-          class="relative"
+  <nav
+    id="toc"
+    class="rounded-card border border-border dark:border-border-dark bg-surface-card/70 dark:bg-surface-card-dark/70 backdrop-blur-sm"
+    aria-label="Table of Contents"
+  >
+    <div class="p-4">
+      <div class="mb-3 flex items-center justify-between gap-2">
+        <h3
+          class="font-heading font-semibold text-[11px] uppercase tracking-[0.18em] text-text-muted dark:text-text-muted-dark"
         >
-          <a
-            href={`#${heading.slug}`}
-            data-toc-link
-            class="block py-1 pr-1 text-[0.8125rem] text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors duration-150 leading-snug
-              aria-[current=true]:text-accent aria-[current=true]:dark:text-accent-dark aria-[current=true]:font-medium
-              before:absolute before:left-[-2px] before:top-0 before:bottom-0 before:w-0.5 before:bg-transparent before:transition-colors
-              aria-[current=true]:before:bg-accent aria-[current=true]:dark:before:bg-accent-dark"
-          >
-            {heading.text}
-          </a>
-        </li>
-      ))
-    }
-  </ul>
-</nav>
+          On this page
+        </h3>
+        <span
+          id="toc-progress-label"
+          class="text-[11px] font-medium text-text-muted dark:text-text-muted-dark"
+        >
+          0%
+        </span>
+      </div>
+      <div class="h-1 overflow-hidden rounded-full bg-border dark:bg-border-dark">
+        <div
+          id="toc-progress-bar"
+          class="h-full w-0 rounded-full bg-accent dark:bg-accent-dark transition-[width] duration-150"
+        ></div>
+      </div>
+    </div>
+
+    <div class="max-h-[calc(100vh-12rem)] overflow-y-auto custom-scrollbar px-4 pb-4">
+      <ul class="space-y-1 border-l-2 border-border dark:border-border-dark">
+        {
+          toc.map((heading) => (
+            <li
+              style={`padding-left: ${(heading.depth - 2) * 0.75 + 0.75}rem`}
+              class="relative"
+            >
+              <a
+                href={`#${heading.slug}`}
+                data-toc-link
+                class="block py-1 pr-1 text-[0.8125rem] text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors duration-150 leading-snug
+                  aria-[current=true]:text-accent aria-[current=true]:dark:text-accent-dark aria-[current=true]:font-medium
+                  before:absolute before:left-[-2px] before:top-0 before:bottom-0 before:w-0.5 before:bg-transparent before:transition-colors
+                  aria-[current=true]:before:bg-accent aria-[current=true]:dark:before:bg-accent-dark"
+              >
+                {heading.text}
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+    </div>
+  </nav>
+</div>
 
 <script>
   function setupScrollspy() {
@@ -100,8 +103,8 @@ if (toc.length === 0) return null;
         }
       },
       {
-        rootMargin: "0px 0px -70% 0px",
-        threshold: 1.0,
+        rootMargin: "-20% 0px -60% 0px",
+        threshold: 0,
       }
     );
 
@@ -113,11 +116,12 @@ if (toc.length === 0) return null;
       const article = document.querySelector("article[data-pagefind-body]");
       if (!article || !progressBar || !progressLabel) return;
 
-      const rect = article.getBoundingClientRect();
-      const viewportHeight = window.innerHeight;
-      const totalScrollable = Math.max(article.scrollHeight - viewportHeight * 0.6, 1);
-      const progressed = Math.min(Math.max(-rect.top, 0), totalScrollable);
-      const percent = Math.round((progressed / totalScrollable) * 100);
+      const start = article.offsetTop;
+      const end = start + article.scrollHeight - window.innerHeight + 80;
+      const percent = Math.max(
+        0,
+        Math.min(100, Math.round(((window.scrollY - start) / Math.max(end - start, 1)) * 100))
+      );
 
       progressBar.style.width = `${percent}%`;
       progressLabel.textContent = `${percent}%`;

@@ -152,6 +152,10 @@
     margin-top: 1.25rem;
   }
 
+  [data-toc-container] {
+    align-self: start;
+  }
+
   .mdx-callout-content > :first-child,
   .comparison-panel > :first-child {
     margin-top: 0;
