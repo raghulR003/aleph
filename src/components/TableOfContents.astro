@@ -17,7 +17,7 @@ if (toc.length === 0) return null;
 
 <nav
   id="toc"
-  class="hidden xl:block sticky top-24 w-48 max-h-[calc(100vh-8rem)] overflow-y-auto custom-scrollbar"
+  class="hidden xl:block sticky top-20 w-48 max-h-[calc(100vh-6rem)] overflow-y-auto custom-scrollbar rounded-card border border-border dark:border-border-dark bg-surface-card/70 dark:bg-surface-card-dark/70 backdrop-blur-sm p-4"
   aria-label="Table of Contents"
 >
   <h3
@@ -35,7 +35,7 @@ if (toc.length === 0) return null;
           <a
             href={`#${heading.slug}`}
             data-toc-link
-            class="block py-1 text-[0.8125rem] text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors duration-150 leading-snug
+            class="block py-1 pr-1 text-[0.8125rem] text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors duration-150 leading-snug
               aria-[current=true]:text-accent aria-[current=true]:dark:text-accent-dark aria-[current=true]:font-medium
               before:absolute before:left-[-2px] before:top-0 before:bottom-0 before:w-0.5 before:bg-transparent before:transition-colors
               aria-[current=true]:before:bg-accent aria-[current=true]:dark:before:bg-accent-dark"

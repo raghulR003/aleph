@@ -27,7 +27,7 @@ const {
 ---
 
 <BaseLayout
-  title={`${post.data.title} — aleph.`}
+  title="aleph."
   description={post.data.description}
   ogImage={post.data.ogImage || "/images/og-default.svg"}
   ogType="article"
@@ -95,7 +95,7 @@ const {
       </header>
 
       {/* Sticky TOC sidebar */}
-      <aside class="hidden xl:block xl:row-span-3 xl:min-w-0">
+      <aside class="hidden xl:block xl:row-span-3 xl:min-w-0 xl:self-start">
         <TableOfContents headings={headings} />
       </aside>
 
