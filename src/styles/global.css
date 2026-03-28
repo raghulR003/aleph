@@ -148,6 +148,10 @@
     margin-top: 0 !important;
   }
 
+  .article-content h2:first-of-type {
+    margin-top: 1.25rem;
+  }
+
   .mdx-callout-content > :first-child,
   .comparison-panel > :first-child {
     margin-top: 0;

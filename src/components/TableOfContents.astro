@@ -7,9 +7,10 @@ interface Heading {
 
 interface Props {
   headings: Heading[];
+  sticky?: boolean;
 }
 
-const { headings } = Astro.props;
+const { headings, sticky = false } = Astro.props;
 const toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
 
 if (toc.length === 0) return null;
@@ -17,7 +18,10 @@ if (toc.length === 0) return null;
 
 <nav
   id="toc"
-  class="hidden xl:block w-48 max-h-[calc(100vh-6rem)] overflow-y-auto custom-scrollbar rounded-card border border-border dark:border-border-dark bg-surface-card/70 dark:bg-surface-card-dark/70 backdrop-blur-sm p-4"
+  class:list={[
+    "hidden xl:block w-48 max-h-[calc(100vh-6rem)] overflow-y-auto custom-scrollbar rounded-card border border-border dark:border-border-dark bg-surface-card/70 dark:bg-surface-card-dark/70 backdrop-blur-sm p-4",
+    sticky ? "sticky top-20" : "",
+  ]}
   aria-label="Table of Contents"
 >
   <div class="mb-4">

@@ -51,8 +51,9 @@ const {
     }
 
     <div class="mx-auto max-w-[1120px] xl:grid xl:grid-cols-[minmax(0,45rem)_12rem] xl:gap-14 2xl:gap-16 xl:items-start">
-      {/* Article header */}
-      <header class="max-w-article mx-auto mb-6 xl:mx-0 xl:max-w-none">
+      <div class="w-full max-w-article mx-auto xl:mx-0 xl:max-w-none xl:min-w-0">
+        {/* Article header */}
+        <header class="mb-6">
         {
           post.data.tags.length > 0 && (
             <div class="flex flex-wrap gap-2 mb-4">
@@ -92,76 +93,72 @@ const {
           updatedDate={post.data.updatedDate}
           body={post.body || ""}
         />
-      </header>
+        </header>
+
+        {/* Main content */}
+        <article class="article-content w-full xl:min-w-0" data-pagefind-body>
+          <slot />
+        </article>
+
+        {/* Post footer */}
+        <div class="w-full">
+          {/* Tags */}
+          {
+            post.data.tags.length > 0 && (
+              <div class="mt-12 pt-8 border-t border-border dark:border-border-dark">
+                <div class="flex flex-wrap gap-2">
+                  {post.data.tags.map((tag) => (
+                    <TagPill tag={tag} size="md" />
+                  ))}
+                </div>
+              </div>
+            )
+          }
+
+          {/* Related Posts */}
+          <RelatedPosts posts={relatedPosts} />
+
+          {/* Lightweight discussion prompt */}
+          <section class="mt-16 pt-10 border-t border-border dark:border-border-dark">
+            <h2
+              class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark mb-8"
+            >
+              Discussion
+            </h2>
+            <div class="rounded-card border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark p-6">
+              <p class="text-text-secondary dark:text-text-secondary-dark leading-relaxed">
+                I’m keeping discussion intentionally lightweight. If this post sparked an idea,
+                save a note, share the link with your own commentary, or start a follow-up post.
+              </p>
+              <div class="mt-4 flex flex-wrap gap-3">
+                <button
+                  id="copy-article-link"
+                  type="button"
+                  class="inline-flex items-center justify-center rounded-card bg-accent dark:bg-accent-dark px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover dark:hover:bg-accent-hover-dark"
+                >
+                  Copy article link
+                </button>
+                <a
+                  href="/tags"
+                  class="inline-flex items-center justify-center rounded-card border border-border dark:border-border-dark px-4 py-2 text-sm font-medium text-text-primary dark:text-text-primary-dark transition-colors hover:bg-surface-hover dark:hover:bg-surface-hover-dark"
+                >
+                  Explore more topics
+                </a>
+              </div>
+              <p
+                id="copy-article-link-status"
+                class="mt-3 text-sm text-text-muted dark:text-text-muted-dark"
+                aria-live="polite"
+              ></p>
+            </div>
+          </section>
+        </div>
+      </div>
 
       {/* Sticky TOC sidebar */}
-      <aside class="hidden xl:block xl:row-span-3 xl:min-w-0 xl:self-start">
-        <div class="sticky top-20">
-          <TableOfContents headings={headings} />
-        </div>
+      <aside class="hidden xl:block w-48 self-start">
+        <TableOfContents headings={headings} sticky />
       </aside>
-
-      {/* Main content */}
-      <article
-        class="article-content w-full max-w-article mx-auto xl:mx-0 xl:max-w-none xl:min-w-0"
-        data-pagefind-body
-      >
-        <slot />
-      </article>
-
-      {/* Post footer */}
-      <div class="max-w-article mx-auto xl:mx-0 xl:max-w-none">
-      {/* Tags */}
-      {
-        post.data.tags.length > 0 && (
-          <div class="mt-12 pt-8 border-t border-border dark:border-border-dark">
-            <div class="flex flex-wrap gap-2">
-              {post.data.tags.map((tag) => (
-                <TagPill tag={tag} size="md" />
-              ))}
-            </div>
-          </div>
-        )
-      }
-
-      {/* Related Posts */}
-      <RelatedPosts posts={relatedPosts} />
-
-      {/* Lightweight discussion prompt */}
-      <section class="mt-16 pt-10 border-t border-border dark:border-border-dark">
-        <h2
-          class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark mb-8"
-        >
-          Discussion
-        </h2>
-        <div class="rounded-card border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark p-6">
-          <p class="text-text-secondary dark:text-text-secondary-dark leading-relaxed">
-            I’m keeping discussion intentionally lightweight. If this post sparked an idea,
-            save a note, share the link with your own commentary, or start a follow-up post.
-          </p>
-          <div class="mt-4 flex flex-wrap gap-3">
-            <button
-              id="copy-article-link"
-              type="button"
-              class="inline-flex items-center justify-center rounded-card bg-accent dark:bg-accent-dark px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-accent-hover dark:hover:bg-accent-hover-dark"
-            >
-              Copy article link
-            </button>
-            <a
-              href="/tags"
-              class="inline-flex items-center justify-center rounded-card border border-border dark:border-border-dark px-4 py-2 text-sm font-medium text-text-primary dark:text-text-primary-dark transition-colors hover:bg-surface-hover dark:hover:bg-surface-hover-dark"
-            >
-              Explore more topics
-            </a>
-          </div>
-          <p
-            id="copy-article-link-status"
-            class="mt-3 text-sm text-text-muted dark:text-text-muted-dark"
-            aria-live="polite"
-          ></p>
-        </div>
-      </section>
-      </div>
     </div>
   </main>
 
