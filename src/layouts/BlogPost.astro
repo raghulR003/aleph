@@ -50,7 +50,7 @@ const {
       )
     }
 
-    <div class="mx-auto max-w-[1120px] xl:grid xl:grid-cols-[minmax(0,45rem)_12rem] xl:gap-14 2xl:gap-16 xl:items-start">
+    <div class="mx-auto max-w-[1120px] xl:grid xl:grid-cols-[minmax(0,45rem)_12rem] xl:gap-14 2xl:gap-16">
       <div class="w-full max-w-article mx-auto xl:mx-0 xl:max-w-none xl:min-w-0">
         {/* Article header */}
         <header class="mb-6">
@@ -156,8 +156,8 @@ const {
       </div>
 
       {/* Sticky TOC sidebar */}
-      <aside class="hidden xl:block w-48 self-start relative" data-toc-container>
-        <TableOfContents headings={headings} sticky />
+      <aside class="hidden xl:block w-48">
+        <TableOfContents headings={headings} />
       </aside>
     </div>
   </main>

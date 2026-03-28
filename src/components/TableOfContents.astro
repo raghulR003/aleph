@@ -7,18 +7,15 @@ interface Heading {
 
 interface Props {
   headings: Heading[];
-  sticky?: boolean;
 }
 
-const { headings, sticky = false } = Astro.props;
+const { headings } = Astro.props;
 const toc = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
 
 if (toc.length === 0) return null;
 ---
 
-<div
-  class:list={["hidden xl:block w-48", sticky ? "sticky top-20" : ""]}
->
+<div class="sticky top-20">
   <nav
     id="toc"
     class="rounded-card border border-border dark:border-border-dark bg-surface-card/70 dark:bg-surface-card-dark/70 backdrop-blur-sm"
