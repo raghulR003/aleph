@@ -304,6 +304,33 @@ npm.cmd run build`}
 </Timeline>
 ```
 
+#### LanguageTabs
+
+Use this when one post should contain multiple language versions on the same page.
+
+```mdx
+<LanguageTabs defaultLanguage="ta">
+  <div slot="ta">
+    <p>தமிழ் உரை இங்கே.</p>
+  </div>
+
+  <div slot="en">
+    <p>English text goes here.</p>
+  </div>
+
+  <div slot="de">
+    <p>Der deutsche Text steht hier.</p>
+  </div>
+</LanguageTabs>
+```
+
+Use this for:
+- fiction published in multiple languages
+- essays you want to keep as one canonical page
+- translation pairs where all versions belong together
+
+If the post is one work in three languages, keep it in **one** `.mdx` file.
+
 ---
 
 ## 7. Images
@@ -619,6 +646,7 @@ And it enforces:
 - content validation runs before build
 - post scaffolding is available via `new-post`
 - reusable MDX components are available in posts
+- multilingual single-page posts are supported with `LanguageTabs`
 - a private CLI dashboard is available via `dashboard`
 
 ---

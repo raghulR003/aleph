@@ -1,0 +1,30 @@
+---
+title: "Multilingual Post Template"
+description: "Draft template showing how to publish one post in Tamil, English, and German on the same page."
+pubDate: 2026-03-28
+author: "default"
+tags: ["template", "multilingual"]
+draft: true
+---
+
+## Single-page language switcher
+
+Use the `LanguageTabs` component when one article should exist as one page with multiple language versions.
+
+<LanguageTabs defaultLanguage="ta">
+  <div slot="ta">
+    <p>தமிழில் உள்ளடக்கம் இங்கே.</p>
+  </div>
+
+  <div slot="en">
+    <p>Put the English version here.</p>
+  </div>
+
+  <div slot="de">
+    <p>Die deutsche Version kommt hier hinein.</p>
+  </div>
+</LanguageTabs>
+
+<Callout type="note" title="Important">
+  Keep all three versions inside the same file when they represent the same work.
+</Callout>

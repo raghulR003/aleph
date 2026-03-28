@@ -66,6 +66,8 @@ for (const file of files) {
   const tags = parseTags(frontmatter.tags || "");
   const body = source.replace(/^---\n[\s\S]*?\n---/, "").trim();
   const wordCount = body.split(/\s+/).filter(Boolean).length;
+  const isMultilingual = body.includes("<LanguageTabs");
+  const isFiction = tags.includes("fiction") || tags.includes("thriller") || tags.includes("story");
 
   if (!title) errors.push(`${file}: missing title`);
   if (!description) errors.push(`${file}: missing description`);
@@ -95,7 +97,7 @@ for (const file of files) {
   if (wordCount < 80) {
     warnings.push(`${file}: article is very short (${wordCount} words)`);
   }
-  if (body && !body.includes("## ")) {
+  if (body && !body.includes("## ") && !isMultilingual && !isFiction) {
     warnings.push(`${file}: consider adding section headings`);
   }
   if (series && !seriesOrder) {

@@ -1,0 +1,106 @@
+---
+interface Props {
+  defaultLanguage?: "ta" | "en" | "de";
+}
+
+const { defaultLanguage = "ta" } = Astro.props;
+const instanceId = `lang-tabs-${Math.random().toString(36).slice(2, 10)}`;
+
+const languages = [
+  { code: "ta", label: "தமிழ்" },
+  { code: "en", label: "English" },
+  { code: "de", label: "Deutsch" },
+] as const;
+---
+
+<section class="my-10 rounded-card border border-border dark:border-border-dark bg-surface-card/60 dark:bg-surface-card-dark/60 p-3 sm:p-4">
+  <div class="not-prose mb-6 flex flex-wrap items-center gap-2" data-language-tabs data-default-language={defaultLanguage} data-language-tabs-id={instanceId}>
+    <span class="mr-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted dark:text-text-muted-dark">
+      Language
+    </span>
+
+    {
+      languages.map((language) => (
+        <button
+          type="button"
+          data-language-tab={language.code}
+          class="inline-flex items-center justify-center rounded-pill border border-border dark:border-border-dark px-3 py-1.5 text-sm font-medium text-text-secondary dark:text-text-secondary-dark transition-colors hover:bg-surface-hover dark:hover:bg-surface-hover-dark"
+          aria-pressed={language.code === defaultLanguage ? "true" : "false"}
+        >
+          {language.label}
+        </button>
+      ))
+    }
+  </div>
+
+  <div data-language-panel="ta">
+    <slot name="ta" />
+  </div>
+
+  <div data-language-panel="en" hidden>
+    <slot name="en" />
+  </div>
+
+  <div data-language-panel="de" hidden>
+    <slot name="de" />
+  </div>
+</section>
+
+<script>
+  function setupLanguageTabs() {
+    const groups = document.querySelectorAll("[data-language-tabs]");
+
+    groups.forEach((group) => {
+      if (group.dataset.bound === "true") return;
+      group.dataset.bound = "true";
+
+      const root = group.closest("section");
+      if (!root) return;
+
+      const tabs = Array.from(group.querySelectorAll("[data-language-tab]"));
+      const panels = Array.from(root.querySelectorAll("[data-language-panel]"));
+      const stored = window.localStorage.getItem("aleph-reading-language");
+      const fallback = group.getAttribute("data-default-language") || "ta";
+
+      const setLanguage = (language) => {
+        tabs.forEach((tab) => {
+          const active = tab.getAttribute("data-language-tab") === language;
+          tab.setAttribute("aria-pressed", active ? "true" : "false");
+          tab.classList.toggle("bg-text-primary", active);
+          tab.classList.toggle("dark:bg-text-primary-dark", active);
+          tab.classList.toggle("text-surface", active);
+          tab.classList.toggle("dark:text-surface-dark", active);
+          tab.classList.toggle("border-text-primary", active);
+          tab.classList.toggle("dark:border-text-primary-dark", active);
+          tab.classList.toggle("text-text-secondary", !active);
+          tab.classList.toggle("dark:text-text-secondary-dark", !active);
+        });
+
+        panels.forEach((panel) => {
+          panel.hidden = panel.getAttribute("data-language-panel") !== language;
+        });
+
+        window.localStorage.setItem("aleph-reading-language", language);
+      };
+
+      const initialLanguage = tabs.some(
+        (tab) => tab.getAttribute("data-language-tab") === stored
+      )
+        ? stored
+        : fallback;
+
+      setLanguage(initialLanguage);
+
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          const language = tab.getAttribute("data-language-tab");
+          if (!language) return;
+          setLanguage(language);
+        });
+      });
+    });
+  }
+
+  setupLanguageTabs();
+  document.addEventListener("astro:after-swap", setupLanguageTabs);
+</script>
