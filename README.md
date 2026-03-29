@@ -1,4 +1,4 @@
-# netztalt.
+# netzstalt.
 
 Private owner handbook for running and maintaining the blog.
 
@@ -637,7 +637,7 @@ And it enforces:
 
 ## 17. Current project notes
 
-- site name is `netztalt.`
+- site name is `netzstalt.`
 - discussion is intentionally lightweight
 - no newsletter system
 - no external comment system

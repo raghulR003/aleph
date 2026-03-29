@@ -65,7 +65,7 @@ for (const post of posts) {
   seriesMap.get(post.series).push(post);
 }
 
-console.log("netztalt. content dashboard\n");
+console.log("netzstalt. content dashboard\n");
 console.log(`Total posts:     ${posts.length}`);
 console.log(`Published:       ${published.length}`);
 console.log(`Drafts:          ${drafts.length}`);
