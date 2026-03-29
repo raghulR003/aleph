@@ -1,0 +1,89 @@
+---
+/**
+ * Mermaid diagram component — renders client-side with dark mode support.
+ *
+ * Usage in MDX:
+ *   import Mermaid from "@/components/Mermaid.astro";
+ *   <Mermaid chart={`graph TD; A-->B;`} />
+ */
+interface Props {
+  chart: string;
+}
+
+const { chart } = Astro.props;
+---
+
+<div class="mermaid-wrapper my-8 not-prose" data-mermaid-chart={chart}>
+  <pre
+    class="mermaid-source rounded-lg border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark p-4 text-sm text-text-secondary dark:text-text-secondary-dark overflow-x-auto font-mono"
+  >
+    {chart.trim()}
+  </pre>
+</div>
+
+<script>
+  async function initMermaid() {
+    const wrappers = document.querySelectorAll<HTMLElement>(
+      "[data-mermaid-chart]",
+    );
+    if (wrappers.length === 0) return;
+
+    const { default: mermaid } = await import("mermaid");
+
+    function getTheme(): string {
+      return document.documentElement.classList.contains("dark")
+        ? "dark"
+        : "default";
+    }
+
+    async function render() {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: getTheme(),
+        securityLevel: "loose",
+        fontFamily:
+          "'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif",
+      });
+
+      for (const wrapper of wrappers) {
+        const chart = wrapper.getAttribute("data-mermaid-chart");
+        if (!chart) continue;
+
+        try {
+          const id = `mermaid-${Math.random().toString(36).slice(2, 9)}`;
+          const { svg } = await mermaid.render(id, chart.trim());
+          wrapper.innerHTML = svg;
+          const svgEl = wrapper.querySelector("svg");
+          if (svgEl) {
+            svgEl.style.margin = "0 auto";
+            svgEl.style.display = "block";
+            svgEl.style.maxWidth = "100%";
+          }
+        } catch (e) {
+          console.error("Mermaid rendering failed:", e);
+          // Leave the pre-formatted source visible as fallback
+        }
+      }
+    }
+
+    await render();
+
+    // Re-render on theme change
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (
+          mutation.type === "attributes" &&
+          mutation.attributeName === "class"
+        ) {
+          render();
+        }
+      }
+    });
+    observer.observe(document.documentElement, { attributes: true });
+  }
+
+  // Run on initial load
+  initMermaid();
+  // Re-run after Astro view transitions
+  document.addEventListener("astro:after-swap", initMermaid);
+</script>

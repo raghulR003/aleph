@@ -173,6 +173,29 @@
   .timeline-root .timeline-item:last-child > div:nth-child(2) {
     display: none;
   }
+
+  /* KaTeX: inherit prose text color for dark mode */
+  .article-content .katex {
+    color: inherit;
+  }
+
+  /* KaTeX display math: center and add breathing room */
+  .article-content .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.5rem 0;
+  }
+
+  /* Mermaid diagram wrapper */
+  .mermaid-wrapper {
+    display: flex;
+    justify-content: center;
+  }
+
+  .mermaid-wrapper svg {
+    max-width: 100%;
+    height: auto;
+  }
 }
 
 /* ============================================

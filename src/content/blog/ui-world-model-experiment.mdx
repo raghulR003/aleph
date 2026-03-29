@@ -9,11 +9,13 @@ tags: ["machine-learning", "world-models", "jepa", "ui-automation", "computer-vi
 draft: false
 ---
 
+import Mermaid from "@/components/Mermaid.astro";
+
 ## The Problem
 
 Current GUI agents are expensive, and when you look at how they actually work, the inefficiency becomes obvious. Claude Computer Use, OpenAI Operator, whatever Google is cooking—they all follow the same pattern: screenshot goes in, massive MLLM forward pass happens, action comes out, and this repeats for every single step with no memory of how the interface behaves, no model of what happens when you click, just pattern matching at scale.
 
-Apple's UI-JEPA showed there's another way entirely. They achieved 50.5x compute reduction versus GPT-4 Turbo on intent prediction, not by shrinking the model or using fewer parameters, but by predicting in latent space instead of pixel or token space, which turns out to be a fundamentally different approach.
+Apple's UI-JEPA showed there's another way entirely. They achieved $50.5\times$ compute reduction versus GPT-4 Turbo on intent prediction, not by shrinking the model or using fewer parameters, but by predicting in latent space instead of pixel or token space, which turns out to be a fundamentally different approach.
 
 So I tried to build one, specifically for UI automation, over a single weekend, using 45 training samples from a YouTube tutorial I found.
 
@@ -64,15 +66,27 @@ The pattern: everyone is moving from pixels to representations.
 
 ### Tubelet Tokenization
 
-Video isn't just a sequence of images, it has temporal structure that matters, and V-JEPA processes this using 3D tubelets of 2 frames × 16×16 pixels each.
+Video isn't just a sequence of images, it has temporal structure that matters, and V-JEPA processes this using 3D tubelets of $2 \text{ frames} \times 16 \times 16 \text{ pixels}$ each.
 
-For a 16-frame clip at 256×256 resolution, the math works out as follows: spatial patches equal (256/16)² which is 256 per frame pair, temporal positions are 16/2 which equals 8, giving you total tokens of 256 × 8 = 2,048 tokens that represent the entire clip.
+For a 16-frame clip at $256 \times 256$ resolution, the math works out as follows:
 
-Each token embeds to 1,024 dimensions when using ViT-L, giving you that [1, 2048, 1024] tensor shape you see in the code, and every single token captures a spatiotemporal slice containing motion and change, not just static appearance.
+$$
+N_{\text{spatial}} = \left(\frac{256}{16}\right)^2 = 256 \text{ per frame pair}
+$$
+
+$$
+N_{\text{temporal}} = \frac{16}{2} = 8
+$$
+
+$$
+N_{\text{tokens}} = N_{\text{spatial}} \times N_{\text{temporal}} = 256 \times 8 = 2{,}048
+$$
+
+Each token embeds to $d = 1{,}024$ dimensions when using ViT-L, giving you that $[1, 2048, 1024]$ tensor shape you see in the code, and every single token captures a spatiotemporal slice containing motion and change, not just static appearance.
 
 ### The Masking Strategy (This Is Critical)
 
-V-JEPA masks approximately 90% of tokens, but crucially, not randomly, because that would make the task trivial and the model wouldn't learn meaningful representations.
+V-JEPA masks approximately $\sim 90\%$ of tokens, but crucially, not randomly, because that would make the task trivial and the model wouldn't learn meaningful representations.
 
 Instead, it uses multi-block masking with three components working together: short-range small blocks that force fine-grained motion understanding, long-range large tube blocks that force global structure and long-term dependencies, and a random mix of these that prevents the model from finding shortcuts.
 
@@ -80,31 +94,65 @@ By hiding most of the input and forcing prediction from the remaining context, t
 
 ### Three Modules
 
-```
-Context Encoder (ViT) → Predictor (lightweight transformer) → Target Encoder (EMA of context encoder)
-```
+<Mermaid chart={`
+graph LR
+    V["Video<br/>(masked ~10% visible)"] --> CE["Context Encoder<br/>(ViT)"]
+    CE --> P["Predictor<br/>(lightweight ViT)"]
+    P --> |"L₁ loss"| TE["Target Encoder<br/>(EMA of context)"]
+    V --> |"full video"| TE
+    
+    style CE fill:#3b82f6,color:#fff,stroke:#2563eb
+    style P fill:#8b5cf6,color:#fff,stroke:#7c3aed
+    style TE fill:#10b981,color:#fff,stroke:#059669
+`} />
 
-**Context encoder** processes the visible patches, which represent only about 10% of the total input after masking.
+**Context encoder** processes the visible patches, which represent only about $\sim 10\%$ of the total input after masking.
 
-**Target encoder** is an exponential moving average of the context encoder, updated slowly with τ approximately 0.996-0.999 rather than through gradients, which prevents representation collapse and maintains stable training targets throughout the process.
+**Target encoder** is an exponential moving average of the context encoder, updated slowly with $\tau \approx 0.996\text{--}0.999$ rather than through gradients, which prevents representation collapse and maintains stable training targets throughout the process. The EMA update rule:
+
+$$
+\bar{\theta} \leftarrow \tau \cdot \bar{\theta} + (1 - \tau) \cdot \theta
+$$
 
 **Predictor** is a lightweight transformer with 12 layers and 384 dimensions for V-JEPA 1, or 24 layers and 1024 dimensions for V-JEPA 2-AC, which takes context embeddings and mask positions as input and predicts the corresponding target embeddings.
 
 ### The Loss
 
-Not pixels. L1 distance in embedding space:
+Not pixels. $L_1$ distance in embedding space:
 
-```
-L = ||predicted_embedding - target_embedding||₁
-```
+$$
+\mathcal{L} = \left\| \hat{z}_t - z_t^{\text{target}} \right\|_1
+$$
 
-This is the key. The model learns high-influence features (things that actually matter for prediction) and ignores surface noise. Apple's ICLR 2025 paper on implicit bias confirms this mechanistically: latent prediction biases toward features with high regression coefficients.
+where $\hat{z}_t$ is the predictor's output and $z_t^{\text{target}}$ comes from the EMA target encoder. This is the key. The model learns high-influence features (things that actually matter for prediction) and ignores surface noise. Apple's ICLR 2025 paper on implicit bias confirms this mechanistically: latent prediction biases toward features with high regression coefficients.
 
 ---
 
 ## Why This Matters for UI
 
 ### The Two Camps
+
+<Mermaid chart={`
+graph TD
+    subgraph DOM["DOM-based Agents"]
+        D1["Parse HTML/A11y tree"] --> D2["Extract elements"] --> D3["Execute action"]
+    end
+    
+    subgraph PIX["Pixel-based Agents"]
+        P1["Screenshot"] --> P2["MLLM forward pass"] --> P3["Action output"]
+    end
+    
+    subgraph WM["World Model Approach"]
+        W1["Encode to latent space"] --> W2["Predict next state"] --> W3["Plan → act"]
+    end
+    
+    DOM -.-> |"Fast but brittle"| FAIL1["Breaks on custom UIs"]
+    PIX -.-> |"General but expensive"| FAIL2["No learned dynamics"]
+    WM -.-> |"Learns behavior"| WIN["Compositional understanding"]
+    
+    style WM fill:#3b82f620,stroke:#3b82f6
+    style WIN fill:#10b981,color:#fff,stroke:#059669
+`} />
 
 **DOM-based** approaches parse the HTML or accessibility tree, which makes them fast and precise but also brittle, breaking whenever they encounter custom components, canvas-based UIs, or Shadow DOM that doesn't follow standard patterns.
 
@@ -121,10 +169,10 @@ Apple's numbers on IIW dataset:
 | Metric | UI-JEPA | GPT-4 Turbo | Claude 3.5 Sonnet |
 |--------|---------|-------------|-------------------|
 | Intent similarity | Baseline | -10.0% | -7.2% |
-| Compute cost | 1× | 50.5× | ~50× |
-| Latency | 1× | 6.6× worse | ~6× worse |
+| Compute cost | $1\times$ | $50.5\times$ | $\sim 50\times$ |
+| Latency | $1\times$ | $6.6\times$ worse | $\sim 6\times$ worse |
 
-50x less compute, and it actually performs better. The caveat here is important: UI-JEPA does intent understanding, which is figuring out what the user is doing, not action execution, which is taking over and doing things itself, and these are fundamentally different problems that require different approaches.
+$50\times$ less compute, and it actually performs better. The caveat here is important: UI-JEPA does intent understanding, which is figuring out what the user is doing, not action execution, which is taking over and doing things itself, and these are fundamentally different problems that require different approaches.
 
 ---
 
@@ -144,32 +192,33 @@ For annotation, I used Llama Scout to label each transition with action type and
 
 ### Architecture
 
-```
-Current clip (2s) + Action (type, coords)
-         ↓
-V-JEPA ViT-L Encoder → [1, 2048, 1024] embedding
-         ↓
-Action embedding concatenated
-         ↓
-6-layer transformer, 512-dim, 8 heads
-         ↓
-Predicts next-frame V-JEPA embedding
-         ↓
-4-layer CNN decoder
-         ↓
-Reconstructed UI image (256×256)
-```
+<Mermaid chart={`
+graph TD
+    A["Current clip (2s) + Action (type, coords)"] --> B["V-JEPA ViT-L Encoder"]
+    B --> C["[1, 2048, 1024] embedding"]
+    D["Action embedding"] --> E["Concatenate"]
+    C --> E
+    E --> F["6-layer Transformer<br/>512-dim, 8 heads"]
+    F --> G["Predicted next-frame<br/>V-JEPA embedding"]
+    G --> H["4-layer CNN Decoder"]
+    H --> I["Reconstructed UI<br/>(256×256)"]
+    
+    style B fill:#3b82f6,color:#fff,stroke:#2563eb
+    style F fill:#8b5cf6,color:#fff,stroke:#7c3aed
+    style H fill:#f59e0b,color:#fff,stroke:#d97706
+`} />
 
 ### Training
 
 Loss function:
-```python
-MSE(predicted, target) + 0.1 * (1 - cosine_similarity(predicted, target))
-```
 
-MSE gets numerical proximity, making sure the predicted embedding is close to the target in absolute terms, while cosine similarity gets semantic direction, ensuring the prediction points in the same conceptual direction, and both matter for different reasons.
+$$
+\mathcal{L} = \text{MSE}(\hat{z}, z) + \lambda \cdot \left(1 - \frac{\hat{z} \cdot z}{\|\hat{z}\| \, \|z\|}\right)
+$$
 
-Hyperparameters were straightforward: AdamW optimizer with learning rate 1e-4 and cosine decay, running for 50 epochs with batch size 4, which is small but necessary given the tiny dataset.
+where $\lambda = 0.1$ balances the two terms. MSE gets numerical proximity, making sure the predicted embedding is close to the target in absolute terms, while cosine similarity gets semantic direction, ensuring the prediction points in the same conceptual direction, and both matter for different reasons.
+
+Hyperparameters were straightforward: AdamW optimizer with learning rate $\eta = 10^{-4}$ and cosine decay, running for 50 epochs with batch size 4, which is small but necessary given the tiny dataset.
 
 ### Results
 
@@ -180,7 +229,7 @@ Hyperparameters were straightforward: AdamW optimizer with learning rate 1e-4 an
 | Cosine similarity | 0.72 | 0.75 | +6.1% |
 | MSE | 11.2 | 10.5 | -6.3% |
 
-6.1% cosine improvement with only 45 samples is meaningful for embeddings, especially because cosine is harder to move than MSE—it requires actual semantic alignment, not just numerical proximity that could happen by chance.
+6.1% cosine improvement with only 45 samples is meaningful for embeddings, especially because cosine similarity is harder to move than MSE—it requires actual semantic alignment, not just numerical proximity that could happen by chance.
 
 ### What the Model Learned
 
@@ -210,7 +259,7 @@ These are reconstructions from predicted embeddings. Not perfect—text is blurr
 | Output | Text description | Visual reconstruction |
 | Decoder | LLM | CNN |
 | Data | 1,700 videos | 45 samples |
-| Compute claim | 50.5x cheaper than GPT-4 | Not benchmarked |
+| Compute claim | $50.5\times$ cheaper than GPT-4 | Not benchmarked |
 
 Apple's approach is production-oriented, designed for real deployment, while mine is exploratory, asking whether we can literally see the future of a UI with minimal training data.
 
@@ -218,20 +267,20 @@ Apple's approach is production-oriented, designed for real deployment, while min
 
 | Aspect | V-JEPA 2 | Mine |
 |--------|----------|------|
-| Scale | 1M+ hours video, 22M videos | 45 samples |
-| Parameters | Up to 1B+ (ViT-g) | V-JEPA ViT-L (frozen) |
+| Scale | $1\text{M+}$ hours video, 22M videos | 45 samples |
+| Parameters | Up to $1\text{B+}$ (ViT-g) | V-JEPA ViT-L (frozen) |
 | Application | Zero-shot robot control | UI state prediction |
 | Planning | MPC in latent space | No explicit planning |
 | Speed | 16s/step vs diffusion 4min/step | Not measured |
 
-V-JEPA 2's robotics work is the closest analog to what I'm attempting: they plan robot actions by optimizing sequences to minimize L1 distance between predicted and goal embeddings, and UI has similar structure being deterministic, rule-based, and amenable to latent dynamics, just with different physics—discrete versus continuous—but the same underlying principle applies.
+V-JEPA 2's robotics work is the closest analog to what I'm attempting: they plan robot actions by optimizing sequences to minimize $L_1$ distance between predicted and goal embeddings, and UI has similar structure being deterministic, rule-based, and amenable to latent dynamics, just with different physics—discrete versus continuous—but the same underlying principle applies.
 
 ### vs UI-TARS (ByteDance)
 
 | Aspect | UI-TARS | Mine |
 |--------|---------|------|
 | Architecture | Pure vision → actions | Vision → latent → vision |
-| Training | ~50B tokens | 45 samples |
+| Training | $\sim 50\text{B}$ tokens | 45 samples |
 | Input | Screenshot | Video clips + actions |
 | Output | Keyboard/mouse actions | Predicted future state |
 | Benchmarks | SOTA on 10+ GUI benchmarks | Not benchmarked |
@@ -251,7 +300,7 @@ The world model only had to learn a simple mapping: given current state plus act
 
 ### Compositional Structure
 
-The [1, 2048, 1024] embeddings are compositional in structure, where each of the 2,048 tokens represents a specific spatiotemporal region, the 1,024-dimensional embedding captures rich semantics for that region, and the transformer attends across tokens to model relationships between regions.
+The $[1, 2048, 1024]$ embeddings are compositional in structure, where each of the $2{,}048$ tokens represents a specific spatiotemporal region, the $1{,}024$-dimensional embedding captures rich semantics for that region, and the transformer attends across tokens to model relationships between regions.
 
 This compositionality enables generalization across different scenarios, so the model learned that clicking a button in the top-right leads to a form appearing in the center as spatial relationships in embedding space, rather than memorizing specific pixel patterns.
 
@@ -271,9 +320,9 @@ Coordinate encoding enables spatial reasoning about where elements are located, 
 
 **Self-correction:** When predictions don't match reality, detect anomaly, backtrack, retry with modified parameters.
 
-**Speed:** V-JEPA 2 plans at 16 seconds per step vs diffusion at 4 minutes per step. 15x speedup. For UI automation: near-instant planning for complex multi-step tasks.
+**Speed:** V-JEPA 2 plans at 16 seconds per step vs diffusion at 4 minutes per step. $15\times$ speedup. For UI automation: near-instant planning for complex multi-step tasks.
 
-**Privacy:** Apple's UI-JEPA targets on-device operation at around 3B parameters for iPhone and iPad, which means no cloud calls and screen content never leaves the device.
+**Privacy:** Apple's UI-JEPA targets on-device operation at around $\sim 3\text{B}$ parameters for iPhone and iPad, which means no cloud calls and screen content never leaves the device.
 
 ---
 
@@ -290,6 +339,29 @@ Coordinate encoding enables spatial reasoning about where elements are located, 
 ---
 
 ## The Research Gap
+
+<Mermaid chart={`
+graph LR
+    subgraph MBRL["Model-based RL"]
+        A1["Dreamer"] 
+        A2["TD-MPC"]
+    end
+    
+    subgraph JEPA["JEPA-style SSL"]
+        B1["I-JEPA"]
+        B2["V-JEPA"]
+        B3["UI-JEPA"]
+    end
+    
+    MBRL --> |"Strong planning<br/>Weak visual generalization"| GAP
+    JEPA --> |"Strong visual understanding<br/>Weak explicit planning"| GAP
+    
+    GAP["❓ The Missing Union:<br/>Latent world models for<br/>representation + planning<br/>in real-world UI"] 
+    
+    style GAP fill:#f59e0b,color:#000,stroke:#d97706,stroke-width:2px
+    style MBRL fill:#3b82f620,stroke:#3b82f6
+    style JEPA fill:#8b5cf620,stroke:#8b5cf6
+`} />
 
 Current literature splits into two camps: **Model-based RL** (Dreamer, TD-MPC) uses world models for policy learning in simulation, offering strong planning but weak visual generalization, while **JEPA-style SSL** (I-JEPA, V-JEPA, UI-JEPA) uses latent prediction for representation learning, providing strong visual understanding but weak explicit planning.
 
@@ -315,7 +387,7 @@ The next step would be to add an explicit planning loop, using MPC in latent spa
 | Late 2025 | Claude Sonnet 4.6 | 72.5% | First AI > human (72.4%) |
 | Early 2026 | GPT-5.4 | 75.0% | Current SOTA |
 
-We're approaching human-level performance, but the cost is enormous, with each task requiring $10+ in API calls and 10+ minutes of latency, which is not practical for real deployment.
+We're approaching human-level performance, but the cost is enormous, with each task requiring \$10+ in API calls and 10+ minutes of latency, which is not practical for real deployment.
 
 World models offer capability without this cost: learn dynamics once, then plan cheaply in latent space.
 
@@ -325,7 +397,7 @@ World models offer capability without this cost: learn dynamics once, then plan 
 
 45 training samples, one weekend, and off-the-shelf V-JEPA embeddings were enough for the model to learn UI state transitions in latent space and decode them back to recognizable visuals.
 
-World models for UI are tractable, not just academic curiosities but practical alternatives to screenshot-hungry MLLMs, and Apple's UI-JEPA already shows 50x compute reduction for intent prediction, suggesting that extending this to full state prediction could bring similar gains to action execution.
+World models for UI are tractable, not just academic curiosities but practical alternatives to screenshot-hungry MLLMs, and Apple's UI-JEPA already shows $50\times$ compute reduction for intent prediction, suggesting that extending this to full state prediction could bring similar gains to action execution.
 
 The field moves fast: V-JEPA 2 does zero-shot robot control, UI-TARS hits SOTA on GUI benchmarks, and the gap between research and production is closing rapidly.
 
