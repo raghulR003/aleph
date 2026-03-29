@@ -36,14 +36,14 @@ const {
   <Header />
 
   <main class="max-w-wide mx-auto px-4 sm:px-6 lg:px-8 py-8">
-    {/* Cover image */}
+    {/* Cover image - adaptive aspect ratio for wide diagrams */}
     {
       post.data.coverImage && (
-        <div class="max-w-4xl mx-auto mb-8 rounded-card overflow-hidden">
+        <div class="max-w-4xl mx-auto mb-8 rounded-card overflow-hidden bg-white dark:bg-slate-900">
           <img
             src={post.data.coverImage}
             alt={post.data.coverAlt || post.data.title}
-            class="w-full aspect-[2/1] object-cover"
+            class="w-full object-contain"
             loading="eager"
           />
         </div>
