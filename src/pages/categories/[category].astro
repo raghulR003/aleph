@@ -39,8 +39,6 @@ const totalPosts = categorySeries.reduce((sum, s) => sum + s.postCount, 0) + sta
 const categoryColors: Record<string, string> = {
   technical: "text-blue-600 dark:text-blue-400",
   creative: "text-purple-600 dark:text-purple-400",
-  fiction: "text-rose-600 dark:text-rose-400",
-  languages: "text-emerald-600 dark:text-emerald-400",
 };
 const accentColor = categoryColors[category] || "text-accent dark:text-accent-dark";
 ---

@@ -222,18 +222,8 @@ export const categoryMetadata: Record<string, { label: string; description: stri
   },
   creative: {
     label: "Creative",
-    description: "Experiments, UI explorations, and visual work",
+    description: "Fiction, stories, experiments, and creative writing",
     color: "purple",
-  },
-  fiction: {
-    label: "Fiction",
-    description: "Stories, thrillers, and narrative experiments",
-    color: "rose",
-  },
-  languages: {
-    label: "Languages",
-    description: "Learning German and explorations in linguistics",
-    color: "emerald",
   },
 };
 

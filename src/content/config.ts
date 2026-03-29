@@ -11,7 +11,7 @@ const blog = defineCollection({
     coverAlt: z.string().optional(),
     author: z.string().default("default"),
     tags: z.array(z.string()).default([]),
-    category: z.enum(["technical", "creative", "fiction", "languages"]).default("technical"),
+    category: z.enum(["technical", "creative"]).default("technical"),
     series: z.string().optional(), // References series slug
     seriesOrder: z.number().optional(),
     draft: z.boolean().default(false),
@@ -41,7 +41,7 @@ const series = defineCollection({
   schema: z.object({
     name: z.string(),
     description: z.string(),
-    category: z.enum(["technical", "creative", "fiction", "languages"]),
+    category: z.enum(["technical", "creative"]),
     coverImage: z.string().optional(),
     coverAlt: z.string().optional(),
     featured: z.boolean().default(false),
