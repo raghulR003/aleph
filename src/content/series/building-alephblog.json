@@ -1,0 +1,9 @@
+{
+  "name": "Building AlephBlog",
+  "description": "The engineering story behind this blog — from Astro setup to custom components, design systems, and deployment.",
+  "category": "technical",
+  "coverImage": "https://images.unsplash.com/photo-1461749280684-dccba630e2f6?w=1200&h=600&fit=crop",
+  "coverAlt": "Code editor with syntax highlighting",
+  "featured": false,
+  "status": "ongoing"
+}

@@ -1,0 +1,9 @@
+{
+  "name": "LocalLLaMA Gold",
+  "description": "A curated series of the highest-quality technical posts from r/LocalLLaMA — quantization, KV cache optimization, and production inference setups.",
+  "category": "technical",
+  "coverImage": "https://images.unsplash.com/photo-1620712943543-bcc4688e7485?w=1200&h=600&fit=crop",
+  "coverAlt": "Abstract neural network visualization with gold accents",
+  "featured": true,
+  "status": "completed"
+}

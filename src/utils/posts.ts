@@ -30,6 +30,35 @@ export function getSortedPosts(
     );
 }
 
+/** Get standalone posts (not part of any series) */
+export function getStandalonePosts(
+  posts: CollectionEntry<"blog">[]
+): CollectionEntry<"blog">[] {
+  return posts
+    .filter((post) => !post.data.draft && !post.data.series)
+    .sort(
+      (a, b) =>
+        new Date(b.data.pubDate).valueOf() - new Date(a.data.pubDate).valueOf()
+    );
+}
+
+/** Get standalone posts by category */
+export function getStandalonePostsByCategory(
+  category: string,
+  posts: CollectionEntry<"blog">[]
+): CollectionEntry<"blog">[] {
+  return posts
+    .filter((post) => 
+      !post.data.draft && 
+      !post.data.series && 
+      (post.data.category || "technical") === category
+    )
+    .sort(
+      (a, b) =>
+        new Date(b.data.pubDate).valueOf() - new Date(a.data.pubDate).valueOf()
+    );
+}
+
 /** Get all unique tags from posts */
 export function getAllTags(
   posts: CollectionEntry<"blog">[]
@@ -74,7 +103,7 @@ export function getSeriesPosts(
     .sort((a, b) => (a.data.seriesOrder || 0) - (b.data.seriesOrder || 0));
 }
 
-/** Get all unique series names */
+/** Get all unique series names with post counts (legacy) */
 export function getAllSeries(
   posts: CollectionEntry<"blog">[]
 ): Map<string, number> {
@@ -86,6 +115,75 @@ export function getAllSeries(
       seriesMap.set(series, (seriesMap.get(series) || 0) + 1);
     });
   return seriesMap;
+}
+
+/** Get all series with metadata and post counts */
+export function getAllSeriesWithMetadata(
+  allSeries: CollectionEntry<"series">[],
+  allPosts: CollectionEntry<"blog">[]
+): Array<{
+  series: CollectionEntry<"series">;
+  postCount: number;
+  posts: CollectionEntry<"blog">[];
+}> {
+  return allSeries
+    .map((seriesEntry) => {
+      const posts = getSeriesPosts(seriesEntry.id, allPosts);
+      return {
+        series: seriesEntry,
+        postCount: posts.length,
+        posts,
+      };
+    })
+    .filter((item) => item.postCount > 0) // Only show series with published posts
+    .sort((a, b) => b.postCount - a.postCount);
+}
+
+/** Get series by category */
+export function getSeriesByCategory(
+  category: string,
+  allSeries: CollectionEntry<"series">[],
+  allPosts: CollectionEntry<"blog">[]
+): Array<{
+  series: CollectionEntry<"series">;
+  postCount: number;
+  posts: CollectionEntry<"blog">[];
+}> {
+  return allSeries
+    .filter((s) => s.data.category === category)
+    .map((seriesEntry) => {
+      const posts = getSeriesPosts(seriesEntry.id, allPosts);
+      return {
+        series: seriesEntry,
+        postCount: posts.length,
+        posts,
+      };
+    })
+    .filter((item) => item.postCount > 0)
+    .sort((a, b) => b.postCount - a.postCount);
+}
+
+/** Get featured series */
+export function getFeaturedSeries(
+  allSeries: CollectionEntry<"series">[],
+  allPosts: CollectionEntry<"blog">[]
+): Array<{
+  series: CollectionEntry<"series">;
+  postCount: number;
+  posts: CollectionEntry<"blog">[];
+}> {
+  return allSeries
+    .filter((s) => s.data.featured)
+    .map((seriesEntry) => {
+      const posts = getSeriesPosts(seriesEntry.id, allPosts);
+      return {
+        series: seriesEntry,
+        postCount: posts.length,
+        posts,
+      };
+    })
+    .filter((item) => item.postCount > 0)
+    .sort((a, b) => b.postCount - a.postCount);
 }
 
 /** Get all categories with post counts */
@@ -137,6 +235,13 @@ export const categoryMetadata: Record<string, { label: string; description: stri
     description: "Learning German and explorations in linguistics",
     color: "emerald",
   },
+};
+
+/** Series status metadata for display */
+export const seriesStatusMetadata: Record<string, { label: string; color: string }> = {
+  ongoing: { label: "Ongoing", color: "yellow" },
+  completed: { label: "Completed", color: "green" },
+  planned: { label: "Planned", color: "gray" },
 };
 
 /** Slugify a string for URLs */

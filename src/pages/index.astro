@@ -4,12 +4,26 @@ import Header from "@/components/Header.astro";
 import Footer from "@/components/Footer.astro";
 import HeroPost from "@/components/HeroPost.astro";
 import PostCard from "@/components/PostCard.astro";
+import SeriesCard from "@/components/SeriesCard.astro";
 import { getCollection } from "astro:content";
-import { getSortedPosts, getAllCategories, categoryMetadata } from "@/utils/posts";
+import { 
+  getSortedPosts, 
+  getAllCategories, 
+  getFeaturedSeries,
+  getStandalonePosts,
+  categoryMetadata 
+} from "@/utils/posts";
 
 const allPosts = await getCollection("blog");
+const allSeries = await getCollection("series");
 const sortedPosts = getSortedPosts(allPosts);
 const [heroPost, ...restPosts] = sortedPosts;
+
+// Get featured series
+const featuredSeries = getFeaturedSeries(allSeries, allPosts);
+
+// Get standalone posts (not in any series) for the latest posts section
+const standalonePosts = getStandalonePosts(allPosts);
 
 // Get categories with post counts
 const categories = getAllCategories(allPosts);
@@ -99,9 +113,37 @@ const categoryColors: Record<string, { bg: string; border: string; hover: string
       )
     }
 
-    {/* Latest posts grid */}
+    {/* Featured Series Section */}
     {
-      restPosts.length > 0 && (
+      featuredSeries.length > 0 && (
+        <section class="mb-16">
+          <div class="flex items-center justify-between mb-6">
+            <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark">
+              Featured Series
+            </h2>
+            <a
+              href="/categories"
+              class="text-sm font-medium text-accent dark:text-accent-dark hover:underline"
+            >
+              All series &rarr;
+            </a>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {featuredSeries.map(({ series, postCount, posts }) => (
+              <SeriesCard
+                series={series}
+                postCount={postCount}
+                posts={posts}
+              />
+            ))}
+          </div>
+        </section>
+      )
+    }
+
+    {/* Latest standalone posts grid */}
+    {
+      standalonePosts.length > 0 && (
         <section>
           <div class="flex items-center justify-between mb-8">
             <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark">
@@ -123,7 +165,7 @@ const categoryColors: Record<string, { bg: string; border: string; hover: string
             </div>
           </div>
           <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {restPosts.map((post) => (
+            {standalonePosts.slice(0, 6).map((post) => (
               <PostCard
                 title={post.data.title}
                 description={post.data.description}
@@ -136,6 +178,16 @@ const categoryColors: Record<string, { bg: string; border: string; hover: string
               />
             ))}
           </div>
+          {standalonePosts.length > 6 && (
+            <div class="mt-8 text-center">
+              <a
+                href="/categories"
+                class="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark hover:bg-surface-hover dark:hover:bg-surface-hover-dark transition-colors text-sm font-medium text-text-primary dark:text-text-primary-dark"
+              >
+                View all {standalonePosts.length} posts
+              </a>
+            </div>
+          )}
         </section>
       )
     }

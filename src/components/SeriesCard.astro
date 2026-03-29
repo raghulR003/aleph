@@ -1,0 +1,116 @@
+---
+import type { CollectionEntry } from "astro:content";
+import { categoryMetadata, seriesStatusMetadata } from "@/utils/posts";
+
+interface Props {
+  series: CollectionEntry<"series">;
+  postCount: number;
+  posts: CollectionEntry<"blog">[];
+}
+
+const { series, postCount, posts } = Astro.props;
+
+const category = series.data.category;
+const categoryMeta = categoryMetadata[category];
+const statusMeta = seriesStatusMetadata[series.data.status];
+
+const colorClasses: Record<string, string> = {
+  blue: "from-blue-500/20 to-cyan-500/20 border-blue-500/30 hover:border-blue-400/50",
+  purple: "from-purple-500/20 to-pink-500/20 border-purple-500/30 hover:border-purple-400/50",
+  rose: "from-rose-500/20 to-orange-500/20 border-rose-500/30 hover:border-rose-400/50",
+  emerald: "from-emerald-500/20 to-teal-500/20 border-emerald-500/30 hover:border-emerald-400/50",
+};
+
+const statusColors: Record<string, string> = {
+  yellow: "bg-yellow-500/20 text-yellow-300 border-yellow-500/30",
+  green: "bg-green-500/20 text-green-300 border-green-500/30",
+  gray: "bg-gray-500/20 text-gray-300 border-gray-500/30",
+};
+
+const gradientClass = colorClasses[categoryMeta.color] || colorClasses.blue;
+const statusClass = statusColors[statusMeta.color] || statusColors.gray;
+---
+
+<a
+  href={`/series/${series.id}`}
+  class={`group relative block overflow-hidden rounded-2xl border bg-gradient-to-br ${gradientClass} transition-all duration-300 hover:scale-[1.02] hover:shadow-xl`}
+>
+  {/* Cover Image */}
+  <div class="relative aspect-[2/1] overflow-hidden">
+    <img
+      src={series.data.coverImage || "/default-og.png"}
+      alt={series.data.coverAlt || series.data.name}
+      class="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+    />
+    <div class="absolute inset-0 bg-gradient-to-t from-surface-card via-surface-card/50 to-transparent" />
+    
+    {/* Status Badge */}
+    <div class="absolute right-3 top-3">
+      <span class={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${statusClass}`}>
+        <span class="h-1.5 w-1.5 rounded-full bg-current"></span>
+        {statusMeta.label}
+      </span>
+    </div>
+  </div>
+
+  {/* Content */}
+  <div class="relative p-5">
+    {/* Category & Post Count */}
+    <div class="mb-3 flex items-center justify-between">
+      <span class={`text-xs font-medium text-${categoryMeta.color}-400`}>
+        {categoryMeta.label}
+      </span>
+      <span class="text-xs text-text-secondary">
+        {postCount} {postCount === 1 ? "post" : "posts"}
+      </span>
+    </div>
+
+    {/* Title */}
+    <h3 class="mb-2 text-xl font-bold text-text-primary group-hover:text-accent-primary transition-colors">
+      {series.data.name}
+    </h3>
+
+    {/* Description */}
+    <p class="mb-4 line-clamp-2 text-sm text-text-secondary">
+      {series.data.description}
+    </p>
+
+    {/* Progress Bar for Ongoing Series */}
+    {series.data.status === "ongoing" && (
+      <div class="mb-3">
+        <div class="h-1.5 w-full rounded-full bg-surface-elevated overflow-hidden">
+          <div 
+            class={`h-full rounded-full bg-${categoryMeta.color}-500`}
+            style={`width: ${Math.min((postCount / 6) * 100, 100)}%`}
+          />
+        </div>
+        <p class="mt-1.5 text-xs text-text-tertiary">
+          {postCount} of ~6 planned posts
+        </p>
+      </div>
+    )}
+
+    {/* Latest Post Preview */}
+    {posts.length > 0 && (
+      <div class="border-t border-white/10 pt-3 mt-3">
+        <p class="text-xs text-text-tertiary mb-1">Latest:</p>
+        <p class="text-sm text-text-secondary line-clamp-1 group-hover:text-text-primary transition-colors">
+          Part {posts[posts.length - 1].data.seriesOrder}: {posts[posts.length - 1].data.title}
+        </p>
+      </div>
+    )}
+
+    {/* CTA */}
+    <div class="mt-4 flex items-center gap-2 text-sm font-medium text-accent-primary">
+      <span>Read series</span>
+      <svg 
+        class="h-4 w-4 transition-transform group-hover:translate-x-1" 
+        fill="none" 
+        viewBox="0 0 24 24" 
+        stroke="currentColor"
+      >
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3" />
+      </svg>
+    </div>
+  </div>
+</a>

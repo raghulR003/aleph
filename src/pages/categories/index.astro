@@ -2,12 +2,20 @@
 import BaseLayout from "@/layouts/BaseLayout.astro";
 import Header from "@/components/Header.astro";
 import Footer from "@/components/Footer.astro";
+import SeriesCard from "@/components/SeriesCard.astro";
 import { getCollection } from "astro:content";
-import { getAllCategories, getAllSeries, categoryMetadata } from "@/utils/posts";
+import { 
+  getAllCategories, 
+  getAllSeriesWithMetadata, 
+  getFeaturedSeries,
+  categoryMetadata 
+} from "@/utils/posts";
 
 const allPosts = await getCollection("blog");
+const allSeries = await getCollection("series");
 const categories = getAllCategories(allPosts);
-const series = getAllSeries(allPosts);
+const seriesWithMetadata = getAllSeriesWithMetadata(allSeries, allPosts);
+const featuredSeries = getFeaturedSeries(allSeries, allPosts);
 
 // Category color classes mapping
 const categoryColors: Record<string, { bg: string; border: string; hover: string; icon: string }> = {
@@ -55,17 +63,51 @@ const categoryIcons: Record<string, string> = {
         Categories
       </h1>
       <p class="text-lg text-text-secondary dark:text-text-secondary-dark">
-        Browse content by type. {categories.size} categories across {allPosts.filter(p => !p.data.draft).length} posts.
+        Browse content by type. {categories.size} categories across {allPosts.filter(p => !p.data.draft).length} posts and {seriesWithMetadata.length} series.
       </p>
     </header>
 
+    <!-- Featured Series -->
+    {
+      featuredSeries.length > 0 && (
+        <section class="mb-16">
+          <div class="flex items-center justify-between mb-6">
+            <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark">
+              Featured Series
+            </h2>
+            <span class="text-sm text-text-secondary dark:text-text-secondary-dark">
+              Curated multi-part content
+            </span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {featuredSeries.map(({ series, postCount, posts }) => (
+              <SeriesCard
+                series={series}
+                postCount={postCount}
+                posts={posts}
+              />
+            ))}
+          </div>
+        </section>
+      )
+    }
+
     <!-- Category Cards Grid -->
     <section class="mb-16">
+      <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark mb-6">
+        Browse by Category
+      </h2>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
         {[...categories.entries()].map(([category, count]) => {
           const meta = categoryMetadata[category];
           const colors = categoryColors[category];
           const iconPath = categoryIcons[category];
+          
+          // Count series in this category
+          const seriesInCategory = seriesWithMetadata.filter(
+            ({ series }) => series.data.category === category
+          ).length;
+          
           return (
             <a
               href={`/categories/${category}`}
@@ -83,11 +125,14 @@ const categoryIcons: Record<string, string> = {
                   </svg>
                 </div>
                 <div class="flex-1 min-w-0">
-                  <h2 class="font-heading font-bold text-xl text-text-primary dark:text-text-primary-dark group-hover:text-accent dark:group-hover:text-accent-dark transition-colors">
+                  <h3 class="font-heading font-bold text-xl text-text-primary dark:text-text-primary-dark group-hover:text-accent dark:group-hover:text-accent-dark transition-colors">
                     {meta?.label || category}
-                  </h2>
+                  </h3>
                   <p class="text-sm text-text-secondary dark:text-text-secondary-dark mt-1">
                     {count} {count === 1 ? "post" : "posts"}
+                    {seriesInCategory > 0 && (
+                      <span> · {seriesInCategory} {seriesInCategory === 1 ? "series" : "series"}</span>
+                    )}
                   </p>
                   {meta?.description && (
                     <p class="text-sm text-text-tertiary dark:text-text-tertiary-dark mt-3 line-clamp-2">
@@ -110,26 +155,25 @@ const categoryIcons: Record<string, string> = {
       </div>
     </section>
 
-    <!-- Series Section -->
+    <!-- All Series -->
     {
-      series.size > 0 && (
+      seriesWithMetadata.length > 0 && (
         <section class="mb-16">
-          <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark mb-6">
-            Series
-          </h2>
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {[...series.entries()].map(([name, count]) => (
-              <a
-                href={`/series/${name.toLowerCase().replace(/\s+/g, "-")}`}
-                class="p-5 rounded-card border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark hover:bg-surface-hover dark:hover:bg-surface-hover-dark transition-colors group"
-              >
-                <h3 class="font-heading font-semibold text-lg text-text-primary dark:text-text-primary-dark group-hover:text-accent dark:group-hover:text-accent-dark transition-colors">
-                  {name}
-                </h3>
-                <p class="text-sm text-text-secondary dark:text-text-secondary-dark mt-1">
-                  {count} {count === 1 ? "post" : "posts"} in series
-                </p>
-              </a>
+          <div class="flex items-center justify-between mb-6">
+            <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark">
+              All Series
+            </h2>
+            <span class="text-sm text-text-secondary dark:text-text-secondary-dark">
+              {seriesWithMetadata.length} total
+            </span>
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {seriesWithMetadata.map(({ series, postCount, posts }) => (
+              <SeriesCard
+                series={series}
+                postCount={postCount}
+                posts={posts}
+              />
             ))}
           </div>
         </section>

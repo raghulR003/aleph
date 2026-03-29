@@ -12,7 +12,7 @@ const blog = defineCollection({
     author: z.string().default("default"),
     tags: z.array(z.string()).default([]),
     category: z.enum(["technical", "creative", "fiction", "languages"]).default("technical"),
-    series: z.string().optional(),
+    series: z.string().optional(), // References series slug
     seriesOrder: z.number().optional(),
     draft: z.boolean().default(false),
     ogImage: z.string().optional(),
@@ -36,4 +36,17 @@ const authors = defineCollection({
   }),
 });
 
-export const collections = { blog, authors };
+const series = defineCollection({
+  type: "data",
+  schema: z.object({
+    name: z.string(),
+    description: z.string(),
+    category: z.enum(["technical", "creative", "fiction", "languages"]),
+    coverImage: z.string().optional(),
+    coverAlt: z.string().optional(),
+    featured: z.boolean().default(false),
+    status: z.enum(["ongoing", "completed", "planned"]).default("ongoing"),
+  }),
+});
+
+export const collections = { blog, authors, series };
