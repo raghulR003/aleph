@@ -154,21 +154,21 @@ Here is the full pipeline comparison:
 
 <Mermaid chart={`
 flowchart LR
-  A["v ∈ ℝ^d"] --> B["Π × v\n(d×d matmul\n16,384 FMAs for d=128)"]
-  B --> C["Lloyd-Max quantize\neach coordinate"]
-  C --> D["Store quantized indices\n+ QJL 1-bit residual"]
+  A[v in R^d] --> B[Pi x v: d x d matmul 16384 FMAs for d=128]
+  B --> C[Lloyd-Max quantize each coordinate]
+  C --> D[Store quantized indices + QJL 1-bit residual]
 `} />
 
 ### RotorQuant Pipeline
 
 <Mermaid chart={`
 flowchart LR
-  A["v ∈ ℝ^d"] --> B["Split into ⌈d/3⌉\ngroups of 3 dims"]
-  B --> C["Embed each group as\ngrade-1 Cl(3,0) multivector\n[0, v₁, v₂, v₃, 0, 0, 0, 0]"]
-  C --> D["Rotor sandwich per group\nR × mv × R̃\n(28 FMAs, sparse)"]
-  D --> E["Grade-aware\nLloyd-Max quantize\n(grade-1 codebooks only)"]
-  E --> F["Drop zero grades\n(grades 0, 2, 3 are zero)"]
-  F --> G["Store 129 indices\n+ QJL 1-bit residual"]
+  A[v in R^d] --> B[Split into ceil-d-div-3 groups of 3 dims]
+  B --> C[Embed as grade-1 Cl-3-0 multivector]
+  C --> D[Rotor sandwich per group: R x mv x R-rev, 28 FMAs]
+  D --> E[Grade-aware Lloyd-Max quantize]
+  E --> F[Drop zero grades 0, 2, 3]
+  F --> G[Store 129 indices + QJL 1-bit residual]
 `} />
 
 The embedded multivector is always grade-1 (only e₁, e₂, e₃ components set). After the sandwich product `R v R̃` with a rotor R (even grade), the result is still grade-1. This is a fundamental algebraic property: rotors preserve grade. The scalar, bivector, and pseudoscalar components stay zero, which means you only need to store 3 numbers per group — matching TurboQuant's index count.

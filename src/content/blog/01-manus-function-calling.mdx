@@ -218,13 +218,13 @@ This is one of the most architecturally significant ideas in the post:
 
 <Mermaid chart={`
 graph TB
-  subgraph L2["Layer 2: LLM Presentation Layer"]
-    B1["Binary guard"] --> B2["Truncation + overflow"]
-    B2 --> B3["Metadata footer"]
+  subgraph L2[Layer 2: LLM Presentation Layer]
+    B1[Binary guard] --> B2[Truncation and overflow]
+    B2 --> B3[Metadata footer]
   end
-  subgraph L1["Layer 1: Unix Execution Layer"]
-    A1["Command routing"] --> A2["pipe | chain | &&"]
-    A2 --> A3["exit code"]
+  subgraph L1[Layer 1: Unix Execution Layer]
+    A1[Command routing] --> A2[pipe and chain operators]
+    A2 --> A3[exit code]
   end
   L2 --> L1
 `} />
@@ -579,9 +579,9 @@ The Pinix runtime (`github.com/epiral/pinix`) handles the deployment and routing
 
 <Mermaid chart={`
 graph TD
-  CLI["CLI / MCP / Portal"] -->|Connect-RPC| Hub["Hub (routes by clip name)"]
-  Hub --> PinixD["pinixd runtime\n(Bun/TS Clips)"]
-  Hub --> EdgeClips["Edge Clips\n(bb-browserd, devices)"]
+  CLI[CLI / MCP / Portal] -->|Connect-RPC| Hub[Hub routes by clip name]
+  Hub --> PinixD[pinixd runtime Bun-TS Clips]
+  Hub --> EdgeClips[Edge Clips bb-browserd devices]
 `} />
 
 This means the single `run(command)` interface can transparently invoke local commands, remote sandboxes, browser instances, edge devices like iPhones, and third-party services — all through the same text-based interface, all with the same error and metadata semantics. The LLM doesn't need to know which layer it's invoking.
