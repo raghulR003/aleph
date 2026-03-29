@@ -11,6 +11,7 @@ const blog = defineCollection({
     coverAlt: z.string().optional(),
     author: z.string().default("default"),
     tags: z.array(z.string()).default([]),
+    category: z.enum(["technical", "creative", "fiction", "languages"]).default("technical"),
     series: z.string().optional(),
     seriesOrder: z.number().optional(),
     draft: z.boolean().default(false),

@@ -1,0 +1,92 @@
+---
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import Header from "@/components/Header.astro";
+import Footer from "@/components/Footer.astro";
+import PostCard from "@/components/PostCard.astro";
+import { getCollection } from "astro:content";
+import { getPostsByCategory, getAllCategories, categoryMetadata } from "@/utils/posts";
+
+export async function getStaticPaths() {
+  const allPosts = await getCollection("blog");
+  const categories = getAllCategories(allPosts);
+
+  return [...categories.keys()].map((category) => ({
+    params: { category: category.toLowerCase() },
+    props: { category },
+  }));
+}
+
+const { category } = Astro.props;
+const allPosts = await getCollection("blog");
+const categoryPosts = getPostsByCategory(category, allPosts);
+const meta = categoryMetadata[category];
+
+// Category color mapping for header accent
+const categoryColors: Record<string, string> = {
+  technical: "text-blue-600 dark:text-blue-400",
+  creative: "text-purple-600 dark:text-purple-400",
+  fiction: "text-rose-600 dark:text-rose-400",
+  languages: "text-emerald-600 dark:text-emerald-400",
+};
+const accentColor = categoryColors[category] || "text-accent dark:text-accent-dark";
+---
+
+<BaseLayout title={`${meta?.label || category} | aleph.`}>
+  <Header />
+
+  <main class="max-w-wide mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <header class="mb-12">
+      <a
+        href="/categories"
+        class="inline-flex items-center gap-1 text-sm text-text-secondary dark:text-text-secondary-dark hover:text-accent dark:hover:text-accent-dark transition-colors mb-4"
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+          <path fill-rule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clip-rule="evenodd" />
+        </svg>
+        All categories
+      </a>
+      <h1 class={`font-heading font-extrabold text-4xl ${accentColor} mb-2`}>
+        {meta?.label || category}
+      </h1>
+      {meta?.description && (
+        <p class="text-lg text-text-secondary dark:text-text-secondary-dark max-w-2xl">
+          {meta.description}
+        </p>
+      )}
+      <p class="text-sm text-text-tertiary dark:text-text-tertiary-dark mt-2">
+        {categoryPosts.length} {categoryPosts.length === 1 ? "post" : "posts"}
+      </p>
+    </header>
+
+    {categoryPosts.length > 0 ? (
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {categoryPosts.map((post) => (
+          <PostCard
+            title={post.data.title}
+            description={post.data.description}
+            pubDate={post.data.pubDate}
+            slug={post.slug}
+            coverImage={post.data.coverImage}
+            coverAlt={post.data.coverAlt}
+            tags={post.data.tags}
+            body={post.body || ""}
+          />
+        ))}
+      </div>
+    ) : (
+      <div class="text-center py-16">
+        <p class="text-text-secondary dark:text-text-secondary-dark">
+          No posts in this category yet.
+        </p>
+        <a
+          href="/categories"
+          class="inline-flex items-center gap-1 text-accent dark:text-accent-dark hover:underline mt-4"
+        >
+          Browse other categories
+        </a>
+      </div>
+    )}
+  </main>
+
+  <Footer />
+</BaseLayout>

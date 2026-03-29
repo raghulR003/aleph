@@ -1,0 +1,168 @@
+---
+import BaseLayout from "@/layouts/BaseLayout.astro";
+import Header from "@/components/Header.astro";
+import Footer from "@/components/Footer.astro";
+import { getCollection } from "astro:content";
+import { getAllCategories, getAllSeries, categoryMetadata } from "@/utils/posts";
+
+const allPosts = await getCollection("blog");
+const categories = getAllCategories(allPosts);
+const series = getAllSeries(allPosts);
+
+// Category color classes mapping
+const categoryColors: Record<string, { bg: string; border: string; hover: string; icon: string }> = {
+  technical: {
+    bg: "bg-blue-500/10 dark:bg-blue-400/10",
+    border: "border-blue-200 dark:border-blue-800",
+    hover: "hover:bg-blue-500/20 dark:hover:bg-blue-400/20",
+    icon: "text-blue-600 dark:text-blue-400",
+  },
+  creative: {
+    bg: "bg-purple-500/10 dark:bg-purple-400/10",
+    border: "border-purple-200 dark:border-purple-800",
+    hover: "hover:bg-purple-500/20 dark:hover:bg-purple-400/20",
+    icon: "text-purple-600 dark:text-purple-400",
+  },
+  fiction: {
+    bg: "bg-rose-500/10 dark:bg-rose-400/10",
+    border: "border-rose-200 dark:border-rose-800",
+    hover: "hover:bg-rose-500/20 dark:hover:bg-rose-400/20",
+    icon: "text-rose-600 dark:text-rose-400",
+  },
+  languages: {
+    bg: "bg-emerald-500/10 dark:bg-emerald-400/10",
+    border: "border-emerald-200 dark:border-emerald-800",
+    hover: "hover:bg-emerald-500/20 dark:hover:bg-emerald-400/20",
+    icon: "text-emerald-600 dark:text-emerald-400",
+  },
+};
+
+// Category icons (simple SVG paths)
+const categoryIcons: Record<string, string> = {
+  technical: "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2 5 5h-5V4zM6 20V4h5v7h7v9H6z",
+  creative: "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z",
+  fiction: "M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z",
+  languages: "M12.87 15.07l-2.54-2.51.03-.03c1.74-1.94 2.98-4.14 3.71-6.53H17V4h-7V2H8v2H1v1.99h11.17C11.5 7.92 10.44 9.75 9 11.35 8.07 10.32 7.3 9.19 6.69 8h-2c.73 1.63 1.73 3.17 2.98 4.56l-5.09 5.02L4 19l5-5 3.11 3.11.76-2.04zM18.5 10h-2L12 22h2l1.12-3h4.75L21 22h2l-4.5-12zm-2.62 7l1.62-4.33L19.12 17h-3.24z",
+};
+---
+
+<BaseLayout title="Categories | aleph.">
+  <Header />
+
+  <main class="max-w-wide mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <header class="mb-12">
+      <h1 class="font-heading font-extrabold text-4xl text-text-primary dark:text-text-primary-dark mb-4">
+        Categories
+      </h1>
+      <p class="text-lg text-text-secondary dark:text-text-secondary-dark">
+        Browse content by type. {categories.size} categories across {allPosts.filter(p => !p.data.draft).length} posts.
+      </p>
+    </header>
+
+    <!-- Category Cards Grid -->
+    <section class="mb-16">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        {[...categories.entries()].map(([category, count]) => {
+          const meta = categoryMetadata[category];
+          const colors = categoryColors[category];
+          const iconPath = categoryIcons[category];
+          return (
+            <a
+              href={`/categories/${category}`}
+              class={`group relative p-6 rounded-card border ${colors.border} ${colors.bg} ${colors.hover} transition-all duration-200`}
+            >
+              <div class="flex items-start gap-4">
+                <div class={`p-3 rounded-lg bg-white/50 dark:bg-black/20 ${colors.icon}`}>
+                  <svg 
+                    xmlns="http://www.w3.org/2000/svg" 
+                    viewBox="0 0 24 24" 
+                    fill="currentColor" 
+                    class="w-6 h-6"
+                  >
+                    <path d={iconPath} />
+                  </svg>
+                </div>
+                <div class="flex-1 min-w-0">
+                  <h2 class="font-heading font-bold text-xl text-text-primary dark:text-text-primary-dark group-hover:text-accent dark:group-hover:text-accent-dark transition-colors">
+                    {meta?.label || category}
+                  </h2>
+                  <p class="text-sm text-text-secondary dark:text-text-secondary-dark mt-1">
+                    {count} {count === 1 ? "post" : "posts"}
+                  </p>
+                  {meta?.description && (
+                    <p class="text-sm text-text-tertiary dark:text-text-tertiary-dark mt-3 line-clamp-2">
+                      {meta.description}
+                    </p>
+                  )}
+                </div>
+                <svg 
+                  xmlns="http://www.w3.org/2000/svg" 
+                  viewBox="0 0 20 20" 
+                  fill="currentColor" 
+                  class={`w-5 h-5 mt-1 opacity-0 group-hover:opacity-100 transition-opacity ${colors.icon}`}
+                >
+                  <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd" />
+                </svg>
+              </div>
+            </a>
+          );
+        })}
+      </div>
+    </section>
+
+    <!-- Series Section -->
+    {
+      series.size > 0 && (
+        <section class="mb-16">
+          <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark mb-6">
+            Series
+          </h2>
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {[...series.entries()].map(([name, count]) => (
+              <a
+                href={`/series/${name.toLowerCase().replace(/\s+/g, "-")}`}
+                class="p-5 rounded-card border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark hover:bg-surface-hover dark:hover:bg-surface-hover-dark transition-colors group"
+              >
+                <h3 class="font-heading font-semibold text-lg text-text-primary dark:text-text-primary-dark group-hover:text-accent dark:group-hover:text-accent-dark transition-colors">
+                  {name}
+                </h3>
+                <p class="text-sm text-text-secondary dark:text-text-secondary-dark mt-1">
+                  {count} {count === 1 ? "post" : "posts"} in series
+                </p>
+              </a>
+            ))}
+          </div>
+        </section>
+      )
+    }
+
+    <!-- Quick Links -->
+    <section>
+      <h2 class="font-heading font-bold text-2xl text-text-primary dark:text-text-primary-dark mb-6">
+        Explore
+      </h2>
+      <div class="flex flex-wrap gap-3">
+        <a
+          href="/tags"
+          class="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark hover:bg-surface-hover dark:hover:bg-surface-hover-dark transition-colors text-sm font-medium text-text-primary dark:text-text-primary-dark"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+            <path fill-rule="evenodd" d="M5.5 3A2.5 2.5 0 003 5.5v2.879a2.5 2.5 0 00.732 1.767l6.5 6.5a2.5 2.5 0 003.536 0l2.878-2.878a2.5 2.5 0 000-3.536l-6.5-6.5A2.5 2.5 0 008.38 3H5.5zM6 7a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+          </svg>
+          All Tags
+        </a>
+        <a
+          href="/search"
+          class="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border dark:border-border-dark bg-surface-card dark:bg-surface-card-dark hover:bg-surface-hover dark:hover:bg-surface-hover-dark transition-colors text-sm font-medium text-text-primary dark:text-text-primary-dark"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4">
+            <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
+          </svg>
+          Search
+        </a>
+      </div>
+    </section>
+  </main>
+
+  <Footer />
+</BaseLayout>

@@ -88,6 +88,57 @@ export function getAllSeries(
   return seriesMap;
 }
 
+/** Get all categories with post counts */
+export function getAllCategories(
+  posts: CollectionEntry<"blog">[]
+): Map<string, number> {
+  const categoryMap = new Map<string, number>();
+  posts
+    .filter((post) => !post.data.draft)
+    .forEach((post) => {
+      const category = post.data.category || "technical";
+      categoryMap.set(category, (categoryMap.get(category) || 0) + 1);
+    });
+  return categoryMap;
+}
+
+/** Get posts by category, sorted by date */
+export function getPostsByCategory(
+  category: string,
+  allPosts: CollectionEntry<"blog">[]
+): CollectionEntry<"blog">[] {
+  return allPosts
+    .filter((post) => !post.data.draft && (post.data.category || "technical") === category)
+    .sort(
+      (a, b) =>
+        new Date(b.data.pubDate).valueOf() - new Date(a.data.pubDate).valueOf()
+    );
+}
+
+/** Category metadata for display */
+export const categoryMetadata: Record<string, { label: string; description: string; color: string }> = {
+  technical: {
+    label: "Technical",
+    description: "Deep dives on LLMs, coding, system design, and engineering",
+    color: "blue",
+  },
+  creative: {
+    label: "Creative",
+    description: "Experiments, UI explorations, and visual work",
+    color: "purple",
+  },
+  fiction: {
+    label: "Fiction",
+    description: "Stories, thrillers, and narrative experiments",
+    color: "rose",
+  },
+  languages: {
+    label: "Languages",
+    description: "Learning German and explorations in linguistics",
+    color: "emerald",
+  },
+};
+
 /** Slugify a string for URLs */
 export function slugify(text: string): string {
   return text
