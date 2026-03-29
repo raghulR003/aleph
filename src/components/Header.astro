@@ -3,7 +3,7 @@ interface Props {
   siteName?: string;
 }
 
-const { siteName = "aleph." } = Astro.props;
+const { siteName = "netztalt." } = Astro.props;
 const currentPath = Astro.url.pathname;
 
 const navLinks = [
@@ -24,7 +24,7 @@ const navLinks = [
         href="/"
         class="flex items-center gap-2 text-xl font-heading font-bold text-text-primary dark:text-text-primary-dark hover:text-accent dark:hover:text-accent-dark transition-colors"
       >
-        <span class="text-accent dark:text-accent-dark text-2xl">&aleph;</span>
+        <span class="text-accent dark:text-accent-dark text-2xl">◊</span>
         {siteName}
       </a>
 

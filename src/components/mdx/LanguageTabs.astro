@@ -59,7 +59,7 @@ const languages = [
 
       const tabs = Array.from(group.querySelectorAll("[data-language-tab]"));
       const panels = Array.from(root.querySelectorAll("[data-language-panel]"));
-      const stored = window.localStorage.getItem("aleph-reading-language");
+      const stored = window.localStorage.getItem("netztalt-reading-language");
       const fallback = group.getAttribute("data-default-language") || "ta";
 
       const setLanguage = (language) => {
@@ -80,7 +80,7 @@ const languages = [
           panel.hidden = panel.getAttribute("data-language-panel") !== language;
         });
 
-        window.localStorage.setItem("aleph-reading-language", language);
+        window.localStorage.setItem("netztalt-reading-language", language);
       };
 
       const initialLanguage = tabs.some(

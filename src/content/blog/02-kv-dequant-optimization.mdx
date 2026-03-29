@@ -158,7 +158,7 @@ This is why NIAH improved.
 
 The actual implementation, from the paper's Method section, is disarmingly simple. Inside the Metal flash attention kernel's V accumulation inner loop:
 
-```metal
+```cpp
 // BEFORE: Unconditional dequant + accumulate for every position
 FOR_UNROLL (short cc = 0; cc < C/NE; ++cc) {
     // ... V dequant and accumulation (always runs) ...

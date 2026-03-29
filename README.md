@@ -1,4 +1,4 @@
-# aleph.
+# netztalt.
 
 Private owner handbook for running and maintaining the blog.
 
@@ -637,7 +637,7 @@ And it enforces:
 
 ## 17. Current project notes
 
-- site name is `aleph.`
+- site name is `netztalt.`
 - discussion is intentionally lightweight
 - no newsletter system
 - no external comment system

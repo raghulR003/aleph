@@ -6,7 +6,7 @@ import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 
 export default defineConfig({
-  site: "https://alephblog.netlify.app",
+  site: "https://netztalt.onrender.com",
   integrations: [
     expressiveCode({
       themes: ["github-dark-dimmed", "github-light"],
