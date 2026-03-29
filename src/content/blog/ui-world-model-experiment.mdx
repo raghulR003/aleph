@@ -1,499 +1,364 @@
 ---
-title: "From Pixels to Latents: Building a World Model for UI Automation"
-description: "An end-to-end experiment using V-JEPA embeddings to predict future UI states in Zoho CRM — and why latent-space world models might be the missing piece for truly intelligent GUI agents."
+title: "I Tried to Build a World Model for UI Automation and It Actually Worked (Sort Of)"
+description: "Using V-JEPA embeddings to predict CRM interface states. 45 training samples. One weekend. Surprisingly functional."
 pubDate: 2026-03-29
-coverImage: "/images/posts/ui-world-model/vjepa-ui-prediction.jpg"
-coverAlt: "Abstract visualization of latent space prediction for UI states"
+coverImage: "/images/posts/ui-world-model/cover.png"
+coverAlt: "Objective-driven AI architecture diagram showing perception, world model, and action modules"
 author: "default"
 tags: ["machine-learning", "world-models", "jepa", "ui-automation", "computer-vision"]
 draft: false
 ---
 
-## The Problem with Today's GUI Agents
+## The Problem
 
-The current generation of GUI agents—Claude's Computer Use, OpenAI's Operator, Google's Project Mariner—share a common architecture: they take screenshots, feed them into large multimodal language models (MLLMs), and generate actions. It's a brute-force approach that works surprisingly well, hitting [75%+ on OSWorld benchmarks](https://os-world.github.io) as of early 2026.
+Current GUI agents are expensive. Claude Computer Use, OpenAI Operator, whatever Google is cooking—they all do the same thing: screenshot in, massive MLLM forward pass, action out. Every single step. No memory of how the interface works, no model of what happens when you click. Just pattern matching at scale.
 
-But there's a fundamental inefficiency here. Every step requires a full forward pass through a massive model. Every screenshot is processed from scratch. The agent has no *memory* of how the interface behaves, no *model* of what happens when you click a button. It's pattern-matching at scale, not understanding.
+Apple's UI-JEPA showed there's another way. They got 50.5x compute reduction vs GPT-4 Turbo on intent prediction. Not by using a smaller model. By predicting in latent space instead of pixel or token space.
 
-Consider the numbers: GPT-4 Turbo processes screenshots at enormous computational cost. Apple's UI-JEPA demonstrated a **50.5× reduction in computational cost** and **6.6× better latency** than GPT-4 Turbo on user intent prediction—while actually outperforming it. The difference? UI-JEPA predicts in latent space, not pixel or token space.
+So I tried to build one. For UI automation. Over a weekend. With 45 training samples from a YouTube tutorial.
 
-This is where **World Models** come in—and why I spent a weekend building one for UI automation.
-
----
-
-## What Are World Models, Really?
-
-### The Foundational Vision (1990)
-
-The concept dates back to [Jürgen Schmidhuber's 1990 PhD thesis](https://ieeexplore.ieee.org/document/6294131), where he proposed that an agent could learn to predict the consequences of its actions using a neural network, then use this learned model to plan and imagine future scenarios without interacting with the real environment.
-
-Schmidhuber's key insight: **curiosity as an intrinsic reward**. The world model's prediction error becomes the reward signal—agents are motivated to explore states where their model is uncertain, thereby improving their understanding. This was the first formalization of a neural world model with curiosity-driven learning.
-
-### The Deep Learning Era (2018–2023)
-
-The idea lay dormant until deep learning made it practical. The evolution since then has been rapid:
-
-| Year | Paper | Contribution | Key Innovation |
-|------|-------|------------|----------------|
-| 2018 | [World Models](https://arxiv.org/abs/1803.10122) | Ha & Schmidhuber | Agent "dreams" inside hallucinated RNN environment (V-M-C architecture) |
-| 2018 | [PlaNet](https://arxiv.org/abs/1811.04551) | Hafner et al. | Recurrent State Space Model (RSSM); latent planning via CEM |
-| 2019 | [DreamerV1](https://arxiv.org/abs/1912.01603) | Hafner et al. | RSSM + actor-critic; learns behaviors by backpropagating through imagined trajectories |
-| 2020 | [DreamerV2](https://arxiv.org/abs/2010.02193) | Hafner et al. | Categorical latents + straight-through gradients; surpasses human performance on Atari |
-| 2022 | [TD-MPC](https://arxiv.org/abs/2203.04955) | Hansen et al. | Decoder-free implicit world model; solves Humanoid in 1M steps |
-| 2023 | [DreamerV3](https://arxiv.org/abs/2301.04104) | Hafner et al. | Single algorithm for 150+ diverse tasks; first to collect Minecraft diamonds from scratch; *Nature* 2025 |
-| 2023 | [TD-MPC2](https://arxiv.org/abs/2310.16828) | Hansen et al. | 317M parameter agent across 80 tasks; no hyperparameter tuning |
-
-DreamerV3 is particularly significant: it demonstrated that a single world model architecture, with one hyperparameter configuration, could master domains as diverse as Atari, DeepMind Control Suite, Minecraft, and BSuite. This is the power of learning dynamics in latent space—the same model structure learns the physics of jumping in platformers, the resource constraints of Minecraft, and the continuous control of robotic locomotion.
-
-### The JEPA Revolution (2022–Present)
-
-While Dreamer focused on reinforcement learning, Yann LeCun proposed a different path: **Joint Embedding Predictive Architecture (JEPA)**. The core philosophical departure: predict in latent space, not pixel space.
-
-| Year | Paper | Contribution | Key Innovation |
-|------|-------|------------|----------------|
-| 2022 | [A Path Towards Autonomous Machine Intelligence](https://openreview.net/pdf?id=BZ5a1r-kVsf) | LeCun | Proposes H-JEPA: 6-module architecture (perception, world model, cost, memory, action, configurator) |
-| 2023 | [I-JEPA](https://arxiv.org/abs/2301.08243) | Assran et al. (Meta) | First JEPA implementation; ViT-H on ImageNet in under 72hrs; no hand-crafted augmentations |
-| 2023 | [MC-JEPA](https://arxiv.org/abs/2307.12698) | Bardes et al. | Joint SSL for motion (optical flow) + content in shared encoder |
-| 2024 | [V-JEPA](https://arxiv.org/abs/2404.08471) | Bardes et al. (Meta) | Feature prediction from video only; 81.9% Kinetics-400, 72.2% SSv2 |
-| 2024 | [UI-JEPA](https://arxiv.org/abs/2409.04081) | Fu et al. (Apple) | JEPA for UI intent prediction; 50.5× less compute than GPT-4 Turbo |
-| 2024 | [seq-JEPA](https://neurips.cc/virtual/2024/poster/118974) | Various | Autoregressive JEPA for invariant + equivariant tasks |
-| 2025 | [V-JEPA 2](https://arxiv.org/abs/2506.09985) | Meta AI | 1M+ hours video; zero-shot robot control via MPC in latent space |
-| 2025 | [SALT](https://machinelearning.apple.com/research/rethinking-jepa) | Apple ML | Frozen teacher alternative to EMA for compute efficiency |
-
-The throughline across all these: **move from predicting pixels to predicting representations.**
+It worked better than it should have.
 
 ---
 
-## The Architecture of Understanding: How JEPA Works
+## What Even Is a World Model
 
-To understand why latent-space prediction matters, we need to examine the mechanics. Here's how V-JEPA actually works under the hood:
+The idea is old. Schmidhuber wrote about this in 1990. Two networks: one learns to predict what happens, the other uses those predictions to plan. The prediction error becomes curiosity—agents explore what they don't understand.
 
-### Tubelet Tokenization: The Spatiotemporal Unit
+Then it sat there for 28 years until deep learning made it practical.
 
-Video is fundamentally different from images—it has temporal structure. V-JEPA processes video using **3D tubelets**: patches that extend across both space and time.
+**The evolution, quickly:**
+
+| Year | What Happened | Why It Matters |
+|------|---------------|----------------|
+| 2018 | Ha & Schmidhuber's "World Models" | Agent dreams inside hallucinated RNN environment |
+| 2018 | PlaNet (Hafner) | RSSM—recurrent state space model for planning |
+| 2019 | DreamerV1 | Actually learns behaviors by backpropagating through imagined trajectories |
+| 2020 | DreamerV2 | Categorical latents, beats humans on Atari |
+| 2022 | TD-MPC | Decoder-free implicit world model |
+| 2023 | DreamerV3 | One algorithm, 150+ tasks, Minecraft diamonds from scratch. Published in *Nature* 2025. |
+| 2023 | TD-MPC2 | 317M parameters, 80 tasks, no hyperparameter tuning |
+
+DreamerV3 is the big one. Same architecture learns platformer physics, Minecraft resource constraints, and robot locomotion. The power of learning dynamics in latent space.
+
+Then LeCun proposed JEPA. Joint Embedding Predictive Architecture. Core insight: predict representations, not pixels.
+
+**JEPA timeline:**
+
+| Year | Paper | The Gist |
+|------|-------|----------|
+| 2022 | LeCun's "Path Towards Autonomous Machine Intelligence" | 6-module architecture proposal |
+| 2023 | I-JEPA (Meta) | First implementation. ViT-H on ImageNet in under 72 hours. No augmentations. |
+| 2023 | MC-JEPA | Motion + content together |
+| 2024 | V-JEPA (Meta) | Video. 81.9% Kinetics-400, 72.2% SSv2. Feature prediction only. |
+| 2024 | UI-JEPA (Apple) | UI intent prediction. 50.5x less compute than GPT-4 Turbo. |
+| 2024 | seq-JEPA | Autoregressive variant |
+| 2025 | V-JEPA 2 | 1M+ hours video. Zero-shot robot control via MPC in latent space. |
+| 2025 | SALT (Apple) | Frozen teacher instead of EMA. More efficient. |
+
+The pattern: everyone is moving from pixels to representations.
+
+---
+
+## How V-JEPA Actually Works (The Technical Part)
+
+### Tubelet Tokenization
+
+Video isn't images. It has time. V-JEPA uses 3D tubelets: 2 frames × 16×16 pixels.
+
+For a 16-frame clip at 256×256:
+- Spatial patches: (256/16)² = 256 per frame pair
+- Temporal positions: 16/2 = 8
+- Total tokens: 256 × 8 = 2,048
+
+Each token embeds to 1,024 dimensions (ViT-L). That's your [1, 2048, 1024] tensor. Every token captures a spatiotemporal slice—motion and change, not just appearance.
+
+### The Masking Strategy (This Is Critical)
+
+V-JEPA masks ~90% of tokens. But not randomly. That would be too easy.
+
+It uses multi-block masking:
+- Short-range small blocks: force fine-grained motion understanding
+- Long-range large tube blocks: force global structure and long-term dependencies
+- Random mix: prevents shortcuts
+
+By hiding most of the input and forcing prediction from context, the model learns what's predictable (object positions, motion, dynamics) and ignores what's noise (exact pixels, lighting, compression artifacts).
+
+### Three Modules
 
 ```
-Tubelet dimensions: 2 frames × 16 pixels × 16 pixels
+Context Encoder (ViT) → Predictor (lightweight transformer) → Target Encoder (EMA of context encoder)
 ```
 
-For a 16-frame clip at 256×256 resolution:
-- Spatial patches per frame: (256/16)² = 256 patches
-- Temporal tubelets: 16 frames / 2 = 8 temporal positions
-- **Total tokens: 256 × 8 = 2,048 tokens**
+**Context encoder**: Processes visible patches (~10% of input).
 
-Each token is embedded to 1,024 dimensions (ViT-L), giving the `[1, 2048, 1024]` tensor shape. This is the fundamental representation unit—each token captures not just a static image patch, but a brief temporal slice of motion and change.
+**Target encoder**: EMA of context encoder. Updated slowly (τ ≈ 0.996-0.999), not via gradients. Prevents collapse.
 
-### Multi-Block Masking: Forcing Semantic Understanding
+**Predictor**: 12 layers, 384-dim (V-JEPA 1) or 24 layers, 1024-dim (V-JEPA 2-AC). Takes context embeddings and mask positions, predicts target embeddings.
 
-V-JEPA uses aggressive **multi-block masking** with ratios approaching ~90%. But it's not random per-patch masking—that would make the task trivial. Instead, V-JEPA uses a sophisticated strategy:
+### The Loss
 
-- **Short-range small blocks**: Localized 3D blocks that force understanding of fine-grained motion
-- **Long-range large tube blocks**: Spatiotemporal spans that force understanding of global structure and long-term dependencies
-- **Random mix**: The combination prevents the model from learning shortcuts
-
-This masking strategy is crucial. By hiding ~90% of the input and forcing prediction of the masked regions from context, the model must learn **what is predictable** (object positions, motion trajectories, physical dynamics) and ignore **what is noise** (exact pixel values, lighting variations, compression artifacts).
-
-### The Three-Module Architecture
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│  Context        │     │  Predictor      │     │  Target         │
-│  Encoder (ViT)  │────→│  (Lightweight   │────→│  Encoder (EMA)  │
-│                 │     │   ViT)          │     │                 │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-        ↑                                              ↑
-   Visible patches                               Full video
-   (10% of input)                                (100% of input)
-```
-
-**Context Encoder**: Processes the visible (unmasked) patches. This is a standard ViT backbone.
-
-**Target Encoder**: An Exponential Moving Average (EMA) of the context encoder. It's updated slowly (τ ≈ 0.996-0.999), not via gradients. This prevents representation collapse and maintains stable training targets.
-
-**Predictor**: A lightweight transformer (12 layers, 384-dim in V-JEPA 1; 24 layers, 1024-dim in V-JEPA 2-AC) that bridges context and target. It takes the context embeddings and mask positions, and predicts the target embeddings.
-
-### The Loss: L1 in Latent Space
-
-The model doesn't reconstruct pixels. It minimizes L1 distance in embedding space:
+Not pixels. L1 distance in embedding space:
 
 ```
 L = ||predicted_embedding - target_embedding||₁
 ```
 
-This is the critical departure from VideoMAE and other pixel-reconstruction approaches. By operating in latent space:
-- The model learns **high-influence features** (regression coefficients) rather than surface appearance
-- It ignores unpredictable noise (exact textures, lighting) that would dominate a pixel loss
-- It captures **semantic structure** that generalizes across visual variations
-
-Apple's ICLR 2025 paper on [implicit bias in JEPA](https://machinelearning.apple.com/research/implicit-bias) confirms this mechanistically: latent-space prediction biases models toward features with high regression coefficients—the ones that actually matter for prediction.
+This is the key. The model learns high-influence features (things that actually matter for prediction) and ignores surface noise. Apple's ICLR 2025 paper on implicit bias confirms this mechanistically: latent prediction biases toward features with high regression coefficients.
 
 ---
 
-## Why Latent Space Matters for UI
+## Why This Matters for UI
 
-### The Two Camps of UI Automation
+### The Two Camps
 
-Traditional approaches fall into two categories, each with fundamental limitations:
+**DOM-based**: Parse HTML/accessibility tree. Fast, precise, brittle. Breaks with custom components, canvas, Shadow DOM.
 
-**1. DOM-based (HTML/Accessibility Tree)**
-- *How it works*: Parse the document structure, extract element properties, feed to LLM
-- *Strengths*: Fast, precise for standard web components, structured data
-- *Weaknesses*: Brittle—breaks with custom components, canvas-based UIs, Shadow DOM, or anything non-standard
-- *Example*: Many early RPA tools, browser automation libraries
+**Pixel-based**: Screenshot → MLLM → action. General, expensive. Every step processes millions of pixels. No learned dynamics.
 
-**2. Pixel-based (Vision-Language Models)**
-- *How it works*: Feed screenshots to MLLMs (GPT-4V, Claude 3.5 Sonnet), generate actions
-- *Strengths*: General—works with any visual interface
-- *Weaknesses*: Expensive—every step requires processing millions of pixels; no learned dynamics
-- *Examples*: Claude Computer Use, OpenAI Operator, UI-TARS
+World models are a third path: learn interface dynamics in compressed latent space.
 
-### The World Model Alternative
-
-A world model offers a third path: **learn the dynamics of the interface in compressed latent space.**
-
-Here's the intuition: when you click "Create Deal" in a CRM, the system doesn't need to hallucinate every pixel of the resulting form. It needs to know that:
-- *A form appears*
-- *Certain fields are now active*  
-- *The state has transitioned from "list view" to "creation view"*
-
-These are **semantic facts**, not pixel values. A world model learns these dynamics:
-
-```
-Current state embedding + Action → Predicted next state embedding
-```
-
-The prediction happens in latent space—fast, semantically grounded, and compositional. The model learns that "click at coordinates (x,y) when button B is visible" leads to "form F appears with fields [name, value, stage]"—not by memorizing pixels, but by learning the causal structure of the interface.
+When you click "Create Deal," you don't need every pixel of the resulting form. You need to know: a form appeared, certain fields are active, state transitioned from list view to creation view. Semantic facts, not pixel values.
 
 ### The Efficiency Argument
 
-Apple's UI-JEPA provides the clearest evidence. On their Intent in the Wild (IIW) dataset:
+Apple's numbers on IIW dataset:
 
 | Metric | UI-JEPA | GPT-4 Turbo | Claude 3.5 Sonnet |
 |--------|---------|-------------|-------------------|
-| Intent similarity | **Baseline** | -10.0% | -7.2% |
-| Compute cost | **1×** | 50.5× | ~50× |
-| Latency | **1×** | 6.6× worse | ~6× worse |
+| Intent similarity | Baseline | -10.0% | -7.2% |
+| Compute cost | 1× | 50.5× | ~50× |
+| Latency | 1× | 6.6× worse | ~6× worse |
 
-UI-JEPA outperforms while using **50× less compute**. This isn't a minor optimization—it's a fundamental architectural advantage of latent-space prediction.
-
-The key caveat: UI-JEPA solves **user intent understanding** (passive observation → text description), not **autonomous action execution** (text instruction → actions). The 50.5× reduction applies to intent classification, not full computer-use tasks. This is a critical distinction often lost in popular coverage.
+50x less compute. And it performs better. The caveat: UI-JEPA does intent understanding (what is the user doing), not action execution (take over and do things). Different problems. Important distinction.
 
 ---
 
-## The Experiment: Predicting Zoho CRM States
+## The Experiment
 
 ### Hypothesis
 
-Given minimal training data (45 samples from a single YouTube tutorial), can a simple transformer learn to predict future UI states in V-JEPA latent space and decode them back to recognizable visual representations?
+Can a simple transformer learn to predict UI states in V-JEPA latent space with minimal data (45 samples), then decode back to recognizable visuals?
 
-The bet: V-JEPA's pre-trained embeddings have already learned rich visual semantics. With a small dataset, we can learn the *dynamics* of this specific interface without learning visual representation from scratch.
+The bet: V-JEPA embeddings already know what buttons and forms look like. We just need to learn the dynamics for this specific interface.
 
-### Data Pipeline
+### Data
 
-**Source**: Single YouTube tutorial on Zoho CRM deal creation
+One YouTube tutorial on Zoho CRM deal creation. Downloaded 1080p. Chopped into 2-second clips with FFmpeg. 45 training samples total.
 
-**Processing**:
-1. Download 1080p video
-2. Chop into 2-second clips using FFmpeg (`-ss`, `-t`, `-c copy`)
-3. **45 training samples** total—intentionally minimal
-
-**Annotation**: Llama Scout (Meta's VLM) annotated each transition:
-- Action type: `click`, `hover`, `type`
-- Coordinates: normalized (x, y)
-- Target element: semantic label when detectable
+Annotation: Llama Scout labeled each transition with action type and coordinates.
 
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  INPUT: Current clip (2s) + Action (type, coords)                   │
-│                         ↓                                        │
-│  V-JEPA ViT-L Encoder → [1, 2048, 1024] embedding                │
-│                         ↓                                        │
-│  Action embedding (concatenated with spatial coords)               │
-│                         ↓                                        │
-│  World Model: 6-layer transformer, 512-dim, 8 heads              │
-│  Predicts: Next-frame V-JEPA embedding                           │
-│                         ↓                                        │
-│  Decoder: 4-layer CNN with skip connections                      │
-│  Output: Reconstructed UI image (256×256)                         │
-└─────────────────────────────────────────────────────────────────┘
+Current clip (2s) + Action (type, coords)
+         ↓
+V-JEPA ViT-L Encoder → [1, 2048, 1024] embedding
+         ↓
+Action embedding concatenated
+         ↓
+6-layer transformer, 512-dim, 8 heads
+         ↓
+Predicts next-frame V-JEPA embedding
+         ↓
+4-layer CNN decoder
+         ↓
+Reconstructed UI image (256×256)
 ```
 
-### Training Details
+### Training
 
-**Loss function** (critical design choice):
+Loss function:
 ```python
-loss = MSE(predicted_embedding, target_embedding) + 
-       0.1 * (1 - cosine_similarity(predicted_embedding, target_embedding))
+MSE(predicted, target) + 0.1 * (1 - cosine_similarity(predicted, target))
 ```
 
-The MSE term ensures the prediction is close in absolute terms. The cosine term ensures it points in the same *semantic direction*—two embeddings can have low MSE but opposite semantic meaning if they differ in scale. Cosine similarity captures directional alignment.
+MSE gets numerical proximity. Cosine gets semantic direction. Both matter.
 
-**Hyperparameters**:
-- Optimizer: AdamW (β₁=0.9, β₂=0.999, weight_decay=0.01)
-- Learning rate: 1e-4 with cosine decay
-- Epochs: 50
-- Batch size: 4 (small dataset)
+Hyperparameters:
+- AdamW, lr=1e-4, cosine decay
+- 50 epochs
+- Batch size 4
 
 ### Results
 
-| Metric | Initial | Final | Improvement |
-|--------|---------|-------|-------------|
+| Metric | Start | End | Change |
+|--------|-------|-----|--------|
 | Train loss | 12.5 | 10.99 | -12.1% |
 | Val loss | 12.6 | 11.00 | -12.7% |
-| Cosine similarity | 0.72 | 0.75 | **+6.1%** |
-| MSE | 11.2 | 10.5 | **-6.3%** |
+| Cosine similarity | 0.72 | 0.75 | +6.1% |
+| MSE | 11.2 | 10.5 | -6.3% |
 
-With only 45 samples, the model improved cosine similarity by 6.1%. This is significant for embeddings—cosine improvements are harder to achieve than raw MSE reductions because they require semantic alignment, not just numerical proximity.
+6.1% cosine improvement with 45 samples. That's meaningful for embeddings. Cosine is harder to move than MSE—it requires semantic alignment, not just numerical proximity.
 
 ### What the Model Learned
 
-Qualitative analysis of reconstructed outputs:
+Structure preservation: sidebar navigation held together. Form fields were recognizable as fields. Layout survived even when exact pixels didn't.
 
-**Structure preservation**: The sidebar navigation was consistently reconstructed. Even when exact pixel values differed, the layout structure—logo at top, menu items in order, active state highlighting—was preserved.
-
-**Form field distinguishability**: Input fields were recognizable as fields, even if the exact border styling differed. The model learned that "form field" is a semantic category, not a specific pixel pattern.
-
-**Compositional understanding**:
-- Clicking "Create Deal" → form appears (learned reliably)
+Compositional understanding:
+- Click "Create Deal" → form appears (reliable)
 - Different action locations → different predictions (positional encoding worked)
-- Hover vs click → different state transitions (action type mattered)
+- Hover vs click → different transitions (action type mattered)
 
-**Failure modes**:
-- Fine text rendering was blurry (decoder limitation)
-- Color accuracy was inconsistent (V-JEPA embeddings don't prioritize exact color)
-- Rare transitions (error states) were poorly predicted (insufficient data)
+**The actual outputs:**
 
----
+![Action - Typed "Testing 1" into the "Description" field](/images/posts/ui-world-model/action_type_1.jpg)
 
-## Comparative Analysis: Where This Fits
+![Action - Typed "Type A" into "Subcategory" input field](/images/posts/ui-world-model/action_type_2.jpg)
 
-### vs. Apple's UI-JEPA
+These are reconstructions from predicted embeddings. Not perfect—text is blurry, colors drift—but the structure is there. You can see it's a CRM interface. You can see form fields. The model learned the layout dynamics, not just memorized pixels.
 
-| Aspect | UI-JEPA (Apple) | My Experiment |
-|--------|-----------------|---------------|
-| **Primary task** | User intent prediction | Next-state visual prediction |
-| **Input** | UI interaction video | UI interaction video |
-| **Output** | Text description of intent | Visual reconstruction of future state |
-| **Decoder** | LLM (decoder-only) | CNN (upsampling) |
-| **Prediction target** | Latent → text | Latent → image |
-| **Training data** | 1,700 videos (IIW) + 914 videos (IIT) | 45 samples |
-| **Compute claim** | 50.5× cheaper than GPT-4 | Not benchmarked vs MLLMs |
-| **Production status** | Research (IUI 2025) | Weekend hack |
-
-Apple's approach is more mature and production-oriented. Mine is more exploratory—asking whether we can literally *see the future* of a UI given minimal training data. The architectures differ: UI-JEPA uses an LLM decoder for text generation; I use a CNN decoder for visual reconstruction. Both operate on V-JEPA embeddings, but with different downstream goals.
-
-### vs. Meta's V-JEPA 2
-
-V-JEPA 2 represents the current frontier of video world models. Key differences:
-
-| Aspect | V-JEPA 2 | My Experiment |
-|--------|----------|---------------|
-| **Scale** | 1M+ hours video, 22M videos | 45 samples |
-| **Parameters** | Up to 1B+ (ViT-g) | V-JEPA ViT-L (frozen) |
-| **Application** | Zero-shot robot control | UI state prediction |
-| **Planning** | MPC in latent space | No explicit planning loop |
-| **Speed** | 16s/step vs diffusion 4min/step | Not measured |
-
-V-JEPA 2's robotics application is the closest analog: it uses Model Predictive Control (MPC) to plan robot actions by optimizing sequences to minimize L1 distance between predicted future embeddings and goal embeddings. The UI domain has similar characteristics—deterministic (mostly), structured, amenable to latent dynamics modeling.
-
-The key difference: UI transitions are discrete and rule-based, while physical world dynamics are continuous and physics-based. But the underlying principle—planning in latent space without pixel generation—is directly applicable.
-
-### vs. ByteDance's UI-TARS
-
-UI-TARS is the current SOTA for end-to-end GUI agents:
-
-| Aspect | UI-TARS | My Experiment |
-|--------|---------|---------------|
-| **Architecture** | Pure vision → actions | Vision → latent → vision |
-| **Training** | ~50B tokens | 45 samples |
-| **Input** | Screenshot only | Video clips + actions |
-| **Output** | Keyboard/mouse actions | Predicted future state |
-| **Benchmarks** | SOTA on 10+ GUI benchmarks | Not benchmarked |
-| **Understanding** | Pattern-matching | Explicit dynamics model |
-
-UI-TARS is fundamentally a pattern-matching system. It doesn't *understand* that clicking "Save" persists data—it learns that this action tends to precede certain screen states. A world model explicitly learns the causal dynamics: action → state transition → consequence.
-
-The tradeoff: UI-TARS works today, at scale, with no domain-specific training. World models require learning the dynamics of each interface but offer compositional understanding, planning, and error detection.
-
-### vs. Traditional DOM-based RPA
-
-| Aspect | DOM-based RPA | My World Model Approach |
-|--------|---------------|------------------------|
-| **Robustness** | Brittle—breaks with UI changes | Robust to visual changes if structure preserved |
-| **Generalization** | None—requires selectors for each element | Can generalize to similar interfaces |
-| **Speed** | Fast (structured data) | Fast (latent operations) |
-| **Setup** | High (element identification) | Medium (video recording + training) |
-| **Maintenance** | High (breaks with UI updates) | Low (retrain on new UI version) |
-
-The world model approach bridges the gap: more robust than DOM-based (doesn't break when button IDs change), more efficient than pure vision (learns dynamics, not just patterns).
+**Failure modes:**
+- Fine text rendering: blurry (decoder limitation)
+- Color accuracy: inconsistent (embeddings don't prioritize exact color)
+- Rare transitions: poorly predicted (insufficient data)
 
 ---
 
-## The Technical Core: Why This Worked
+## Comparisons: Where This Fits
+
+### vs UI-JEPA (Apple)
+
+| Aspect | UI-JEPA | Mine |
+|--------|---------|------|
+| Task | Intent prediction | Next-state visual prediction |
+| Output | Text description | Visual reconstruction |
+| Decoder | LLM | CNN |
+| Data | 1,700 videos | 45 samples |
+| Compute claim | 50.5x cheaper than GPT-4 | Not benchmarked |
+
+Apple's is production-oriented. Mine is exploratory—can we literally see the future of a UI with minimal training?
+
+### vs V-JEPA 2
+
+| Aspect | V-JEPA 2 | Mine |
+|--------|----------|------|
+| Scale | 1M+ hours video, 22M videos | 45 samples |
+| Parameters | Up to 1B+ (ViT-g) | V-JEPA ViT-L (frozen) |
+| Application | Zero-shot robot control | UI state prediction |
+| Planning | MPC in latent space | No explicit planning |
+| Speed | 16s/step vs diffusion 4min/step | Not measured |
+
+V-JEPA 2's robotics work is the closest analog. They plan robot actions by optimizing sequences to minimize L1 distance between predicted and goal embeddings. UI has similar structure: deterministic, rule-based, amenable to latent dynamics. Different physics (discrete vs continuous), same principle.
+
+### vs UI-TARS (ByteDance)
+
+| Aspect | UI-TARS | Mine |
+|--------|---------|------|
+| Architecture | Pure vision → actions | Vision → latent → vision |
+| Training | ~50B tokens | 45 samples |
+| Input | Screenshot | Video clips + actions |
+| Output | Keyboard/mouse actions | Predicted future state |
+| Benchmarks | SOTA on 10+ GUI benchmarks | Not benchmarked |
+| Understanding | Pattern matching | Explicit dynamics model |
+
+UI-TARS works now, at scale, no domain training. World models need per-interface training but offer compositional understanding, planning, error detection.
+
+---
+
+## Why It Worked (Technical Analysis)
 
 ### Transfer Learning from V-JEPA
 
-The experiment succeeded with minimal data because V-JEPA provided pre-trained visual representations. The embeddings already encode:
+The 45-sample success comes from V-JEPA's pre-trained representations. The embeddings already encode:
 - Object boundaries and shapes
-- Text regions (even if not OCR-accurate)
+- Text regions (not OCR-accurate but text-like)
 - Layout structure and spatial relationships
 - Temporal dynamics (from video pre-training)
 
-The world model only had to learn the **mapping**: given current state + action, what's the next state? It didn't have to learn what a button looks like—that was already in the embeddings.
+The world model only learned: given current state + action, what's next? It didn't learn what a button looks like. That was already in the embeddings.
 
-### The Power of Compositional Embeddings
+### Compositional Structure
 
-V-JEPA's [1, 2048, 1024] embeddings are compositional:
-- Each of the 2,048 tokens represents a spatiotemporal region
-- The 1,024-dim embedding captures rich visual semantics
-- The transformer can attend across tokens to model relationships
+The [1, 2048, 1024] embeddings are compositional. Each of 2,048 tokens represents a spatiotemporal region. The 1,024-dim embedding captures rich semantics. The transformer attends across tokens to model relationships.
 
-This compositionality enables generalization. The model learned that "clicking a button in the top-right" leads to "form appearing in center"—not by memorizing specific pixels, but by learning spatial relationships in embedding space.
+This enables generalization. The model learned "clicking a button in top-right leads to form in center" as spatial relationships in embedding space, not memorized pixels.
 
 ### Action Conditioning
 
-The action embedding (type + coordinates) was critical. Without it, the model would predict the most likely next state regardless of action. With it, the model learned:
-- Click at (0.85, 0.12) → "Create Deal" button → form appears
+The action embedding (type + coordinates) was essential. Without it, the model predicts the most likely next state regardless of action. With it:
+- Click at (0.85, 0.12) → "Create Deal" → form appears
 - Hover at (0.5, 0.3) → tooltip appears
-- Type at (0.5, 0.5) → text field updates
+- Type at (0.5, 0.5) → field updates
 
-The coordinate encoding enabled spatial reasoning; the action type enabled semantic reasoning about different interaction modes.
+Coordinate encoding enables spatial reasoning. Action type enables semantic reasoning about interaction modes.
 
 ---
 
-## Implications and Future Directions
+## What This Enables (If It Matures)
 
-### What World Models Enable for UI Automation
+**Planning before acting:** Like V-JEPA 2's MPC for robots, simulate multiple action sequences, choose optimal path. Plan in latent space (fast), execute optimal sequence.
 
-If this approach matures, several capabilities become possible:
+**Error prevention:** Predict consequences before execution. Detect "this click will discard unsaved work." Intervene.
 
-**1. Planning Before Acting**
+**Self-correction:** When predictions don't match reality, detect anomaly, backtrack, retry with modified parameters.
 
-Like V-JEPA 2's MPC for robots, a UI world model could simulate multiple action sequences:
+**Speed:** V-JEPA 2 plans at 16 seconds per step vs diffusion at 4 minutes per step. 15x speedup. For UI automation: near-instant planning for complex multi-step tasks.
 
-```
-Option A: Click "Create" → Fill form → Click "Save" 
-  → Predicted outcome: Deal created, 3 steps
-  
-Option B: Click "Import" → Upload CSV → Map fields
-  → Predicted outcome: 50 deals created, 5 steps but batch
-  
-[Choose optimal path based on goal]
-```
+**Privacy:** Apple's UI-JEPA targets on-device operation (~3B parameters, iPhone/iPad). No cloud calls. Screen content never leaves device.
 
-The agent plans in latent space—fast, without executing actions—then executes the optimal sequence.
+---
 
-**2. Error Prevention**
+## Limitations (Honest)
 
-By predicting consequences before execution:
+**Data:** 45 samples worked for constrained task. General UI understanding needs scale. Apple used 1,700 videos. Meta used millions. Sample efficiency is good, not infinite.
 
-```
-Current state: Unsaved form
-Proposed action: Click browser back button
-Predicted next state: Form lost, data gone
-[WARNING: This will discard unsaved work. Continue?]
-```
+**Action space:** Simple clicks and hovers only. Real UI needs: complex typing, scrolling, drag-and-drop, context menus, multi-modal inputs. Each requires extending the action embedding.
 
-The model detects dangerous transitions and intervenes.
+**Generalization:** Learned Zoho CRM's specific layout. Transfer to Salesforce, HubSpot, or IDEs untested. V-JEPA embeddings generalize. Dynamics model may not.
 
-**3. Self-Correction**
+**Decoder:** CNN reconstructed structure, not fine details. Diffusion-based decoder (like V-JEPA 2's visualization model) might improve fidelity.
 
-When predictions don't match reality:
+---
 
-```
-Expected: Form submission → Success message
-Actual: Form submission → Error modal
-[Model prediction error detected]
-[Backtrack to last known good state]
-[Retry with modified parameters]
-```
+## The Research Gap
 
-The world model becomes a runtime monitor for agent behavior.
+Current literature splits:
+- **Model-based RL** (Dreamer, TD-MPC): World models for policy learning in simulation. Strong planning, weak visual generalization.
+- **JEPA-style SSL** (I-JEPA, V-JEPA, UI-JEPA): Latent prediction for representation learning. Strong visual understanding, weak explicit planning.
 
-**4. Speed**
+Missing: The union. Latent world models for both representation learning AND planning in real-world UI environments.
 
-Latent-space operations are fast. V-JEPA 2 plans at **16 seconds per step** vs. diffusion models at **4 minutes per step**—a **15× speedup**. For UI automation, this means near-instantaneous planning even for complex multi-step tasks.
-
-### Current Limitations
-
-**Data Efficiency**: My 45-sample experiment worked for a constrained task, but general UI understanding requires scale. Apple used 1,700 videos; Meta used millions. The sample efficiency is good but not infinite.
-
-**Action Space**: I modeled simple clicks and hovers. Real UI automation requires:
-- Complex typing (passwords, formatted text)
-- Scrolling (infinite scroll, nested containers)
-- Drag-and-drop (file uploads, reordering)
-- Context menus (right-click interactions)
-- Multi-modal inputs (file pickers, date selectors)
-
-Each requires extending the action embedding space.
-
-**Generalization**: The model learned Zoho CRM's specific layout. Transfer to other CRMs (Salesforce, HubSpot) or entirely different application types (design tools, IDEs) is untested. The V-JEPA embeddings generalize; the dynamics model may not.
-
-**Decoder Quality**: The CNN decoder reconstructed structure but not fine details. Better decoders—perhaps diffusion-based, like V-JEPA 2's visualization model—might improve fidelity.
-
-### The Research Gap
-
-There's a curious divide in the literature:
-
-- **Model-based RL** (Dreamer, TD-MPC): Uses world models for policy learning in simulated environments. Strong on planning, weak on visual generalization.
-- **JEPA-style SSL** (I-JEPA, V-JEPA, UI-JEPA): Uses latent prediction for representation learning. Strong on visual understanding, weak on explicit planning.
-
-What's missing is the **union**: a system that uses latent world models for *both* representation learning *and* planning in real-world UI environments.
-
-My experiment is a small step toward that union. It demonstrates that:
+This experiment is a small step. It shows:
 1. V-JEPA embeddings capture UI structure
 2. Simple transformers can learn UI dynamics in latent space
 3. Decoding back to visual space is possible
 
-The next step would be adding an explicit planning loop—MPC in latent space for UI navigation, analogous to V-JEPA 2's robotics application.
+Next step: Add explicit planning loop. MPC in latent space for UI navigation, like V-JEPA 2's robotics work.
 
 ---
 
-## Historical Context: Why Now?
+## Historical Context: Why Now
 
-### The OSWorld Benchmark Trajectory
+### OSWorld Trajectory
 
-The GUI agent field has progressed rapidly:
-
-| Date | Agent | OSWorld Score | Notes |
-|------|-------|---------------|-------|
+| Date | Agent | Score | Notes |
+|------|-------|-------|-------|
 | 2024 | First AI results | 12.2% | Baseline |
 | Oct 2024 | Claude 3.5 Sonnet | 14.9% | Computer Use launch |
-| Jan 2025 | OpenAI CUA/Operator | 38.1% | Major jump |
+| Jan 2025 | OpenAI CUA/Operator | 38.1% | Big jump |
 | Feb 2025 | Claude 3.7 Sonnet | 28.0% | #1 at time |
 | Mid-2025 | Claude Sonnet 4.5 | ~61.4% | Rapid improvement |
 | Late 2025 | Claude Sonnet 4.6 | 72.5% | First AI > human (72.4%) |
-| Early 2026 | GPT-5.4 | 75.0% | New SOTA |
+| Early 2026 | GPT-5.4 | 75.0% | Current SOTA |
 
-The trajectory is clear: we're approaching human-level performance on computer-use benchmarks. But the cost is enormous—each step requires massive MLLM inference.
+Approaching human-level performance. But cost is enormous. Each task: $10+ in API calls, 10+ minutes latency. Not practical for real deployment.
 
-### The Efficiency Imperative
-
-As agents become more capable, efficiency becomes the bottleneck. A 75% OSWorld score is impressive, but if each task requires $10 in API calls and 10 minutes of latency, it's not practical for real deployment.
-
-World models offer a path to **capability without cost**. By learning dynamics once, then planning cheaply in latent space, we can achieve similar performance at a fraction of the compute.
-
-### The Privacy Angle
-
-Apple's UI-JEPA is explicitly designed for on-device operation. The ~3B parameter model can run on iPhone/iPad without cloud calls. This matters for UI automation—users may not want screenshots of their sensitive workflows sent to OpenAI or Anthropic.
-
-A world model approach enables **private, local, efficient** UI automation. The model learns from local interaction data, plans locally, and never exposes screen content to external APIs.
+World models offer capability without cost. Learn dynamics once, plan cheaply in latent space.
 
 ---
 
 ## Conclusion
 
-The experiment worked better than it had any right to. With 45 training samples, a simple architecture, and off-the-shelf V-JEPA embeddings, the model learned to predict UI state transitions in latent space and decode them back to recognizable visual representations.
+45 training samples. One weekend. Off-the-shelf V-JEPA embeddings. The model learned to predict UI state transitions in latent space and decode them back to recognizable visuals.
 
-This suggests that **world models for UI are tractable**—not just as academic curiosities, but as practical alternatives to screenshot-hungry MLLMs. The efficiency gains could be substantial: Apple's UI-JEPA demonstrates 50× compute reduction for intent prediction. Extending this to full state prediction could bring similar gains to action execution.
+World models for UI are tractable. Not academic curiosities. Practical alternatives to screenshot-hungry MLLMs. Apple's UI-JEPA shows 50x compute reduction for intent prediction. Extending to full state prediction could bring similar gains to action execution.
 
-The field is moving fast. V-JEPA 2 enables zero-shot robot control. UI-TARS achieves SOTA on GUI benchmarks. The gap between research and production is closing.
+Field moves fast. V-JEPA 2 does zero-shot robot control. UI-TARS hits SOTA on GUI benchmarks. Research and production gap closes.
 
-For practitioners, the takeaway is: **start with embeddings, not pixels**. Whether you're building UI agents, robotics systems, or any predictive model, the latent space is where understanding lives. The pixels are just noise.
+For practitioners: start with embeddings, not pixels. Latent space is where understanding lives. Pixels are just noise.
 
-The future of UI automation isn't bigger vision models—it's smarter world models that understand *why* interfaces behave the way they do, not just *what* they look like.
+Future of UI automation isn't bigger vision models. It's smarter world models that understand why interfaces behave the way they do, not just what they look like.
 
 ---
 
@@ -501,13 +366,13 @@ The future of UI automation isn't bigger vision models—it's smarter world mode
 
 ### Foundational World Models
 
-1. Schmidhuber, J. (1990). "A Possibility for Implementing Curiosity and Boredom in Model-Building Neural Controllers." *Proceedings of the International Conference on Simulation of Adaptive Behavior*. [IEEE](https://ieeexplore.ieee.org/document/6294131)
+1. Schmidhuber, J. (1990). "A Possibility for Implementing Curiosity and Boredom in Model-Building Neural Controllers." *IEEE*.
 
-2. Ha, D., & Schmidhuber, J. (2018). "World Models." *arXiv:1803.10122*. [Link](https://arxiv.org/abs/1803.10122)
+2. Ha, D., & Schmidhuber, J. (2018). "World Models." *arXiv:1803.10122*.
 
-3. Ha, D., & Schmidhuber, J. (2018). "Recurrent World Models Facilitate Policy Evolution." *NeurIPS*. [Link](https://arxiv.org/abs/1809.01999)
+3. Ha, D., & Schmidhuber, J. (2018). "Recurrent World Models Facilitate Policy Evolution." *NeurIPS*.
 
-### Dreamer Lineage (Model-Based RL)
+### Dreamer Lineage
 
 4. Hafner, D., et al. (2018). "Learning Latent Dynamics for Planning from Pixels." *arXiv:1811.04551* (PlaNet).
 
@@ -519,13 +384,13 @@ The future of UI automation isn't bigger vision models—it's smarter world mode
 
 ### TD-MPC Lineage
 
-8. Hansen, N., et al. (2022). "Temporal Difference Learning for Model Predictive Control." *arXiv:2203.04955* (TD-MPC).
+8. Hansen, N., et al. (2022). "Temporal Difference Learning for Model Predictive Control." *arXiv:2203.04955*.
 
 9. Hansen, N., et al. (2023). "TD-MPC2: Scalable, Robust World Models for Continuous Control." *ICLR 2024*. *arXiv:2310.16828*.
 
-### JEPA Family (Meta AI)
+### JEPA Family
 
-10. LeCun, Y. (2022). "A Path Towards Autonomous Machine Intelligence." *OpenReview*. [Link](https://openreview.net/pdf?id=BZ5a1r-kVsf)
+10. LeCun, Y. (2022). "A Path Towards Autonomous Machine Intelligence." *OpenReview*.
 
 11. Assran, M., et al. (2023). "Self-Supervised Learning from Images with a Joint-Embedding Predictive Architecture." *CVPR*. *arXiv:2301.08243* (I-JEPA).
 
@@ -533,27 +398,27 @@ The future of UI automation isn't bigger vision models—it's smarter world mode
 
 13. Meta AI. (2025). "V-JEPA 2: Self-Supervised Video Models Enable Understanding, Prediction and Planning." *arXiv:2506.09985*.
 
-### UI-JEPA (Apple)
+### UI-JEPA
 
 14. Fu, Y., et al. (2024). "Towards Active Perception of User Intent through Onscreen User Activity." *arXiv:2409.04081*.
 
-15. Apple ML Research. (2025). "Rethinking JEPA: Designing Self-Supervised Learning for Visual Understanding with a Frozen Teacher." [Link](https://machinelearning.apple.com/research/rethinking-jepa) (SALT).
+15. Apple ML Research. (2025). "Rethinking JEPA: Designing Self-Supervised Learning for Visual Understanding with a Frozen Teacher."
 
-16. Apple ML Research. (2025). "Implicit Bias of Self-Supervised Learning: A Study on Latent Prediction." [Link](https://machinelearning.apple.com/research/implicit-bias).
+16. Apple ML Research. (2025). "Implicit Bias of Self-Supervised Learning: A Study on Latent Prediction."
 
-### GUI Agents & Benchmarks
+### GUI Agents
 
 17. Xu, Y., et al. (2025). "UI-TARS: Pioneering Automated GUI Interaction with Native Agents." *arXiv:2501.12326*.
 
-18. Shi, Y., et al. (2024). "OSWorld: Benchmarking Multimodal Agents for Open-Ended Tasks in Real Computer Environments." *NeurIPS*. [Link](https://os-world.github.io)
+18. Shi, Y., et al. (2024). "OSWorld: Benchmarking Multimodal Agents for Open-Ended Tasks in Real Computer Environments." *NeurIPS*.
 
-19. Anthropic. (2024). "Claude 3.5 Sonnet and Computer Use." [Link](https://anthropic.com/news/3-5-models-and-computer-use)
+19. Anthropic. (2024). "Claude 3.5 Sonnet and Computer Use."
 
-20. OpenAI. (2025). "Computer-Using Agent." [Link](https://openai.com/index/computer-using-agent)
+20. OpenAI. (2025). "Computer-Using Agent."
 
 ### Recent Variants
 
-21. Various. (2024). "seq-JEPA: Autoregressive Joint-Embedding Predictive Architecture." *NeurIPS 2024*. [Link](https://neurips.cc/virtual/2024/poster/118974)
+21. Various. (2024). "seq-JEPA: Autoregressive Joint-Embedding Predictive Architecture." *NeurIPS 2024*.
 
 22. Various. (2025). "VL-JEPA: Vision-Language Joint-Embedding Predictive Architecture." *arXiv:2512.10942*.
 
