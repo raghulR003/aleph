@@ -1,0 +1,630 @@
+---
+title: "How to Run 170K Context at 100+ tok/s: A Production Setup Guide"
+description: "A forensic breakdown of how u/JohnTheNerd3 achieved 100+ tok/s decode and ~1500 tok/s prefill on Qwen3.5 27B with 170K context using two RTX 3090s — with the actual vLLM commands, memory math, and community gotchas."
+pubDate: 2026-03-29
+coverImage: "https://images.unsplash.com/photo-1518770660439-4636190af475?w=1200&h=600&fit=crop"
+coverAlt: "Circuit board close-up suggesting high-performance computing infrastructure"
+author: "default"
+tags: ["local-llm", "inference", "multi-gpu", "vllm", "qwen3.5", "rtx-3090", "long-context", "production"]
+draft: false
+series: "LocalLLaMA Gold"
+seriesOrder: 6
+---
+
+On March 1, 2026, a user named u/JohnTheNerd3 posted a video to r/LocalLLaMA that broke something in the community's mental model. The title was clinical: *"Running Qwen3.5 27b dense with 170k context at 100+t/s decode and ~1500t/s prefill on 2x3090 (with 585t/s throughput for 8 simultaneous requests)."* The post climbed to 696 upvotes at 99% upvote ratio and generated 134 comments spanning everything from technical scrutiny to stunned disbelief.
+
+The top comment read: *"That's spectacular, on a dense 30b-ish dual-GPU split configuration. Never seen anything like it!"*
+
+It earned those reactions. What JohnTheNerd3 demonstrated wasn't just good performance — it was a configuration that most people assumed required a $32,000 A100 node, running on two used consumer cards you can buy on eBay for under a thousand dollars each. This is the full technical breakdown of how it works, why the numbers are real, and how to reproduce it.
+
+---
+
+## Part 1: Why 170K Context Changes What's Possible
+
+Context length isn't a luxury feature. It's the difference between a model that can reason over a problem and one that has to pretend it can.
+
+Consider what 170,000 tokens actually represents:
+
+| Content Type | Approximate Token Count |
+|---|---|
+| Full Harry Potter (book 1) | ~77,000 tokens |
+| Entire codebase of a medium SaaS app | ~120,000 tokens |
+| A full legal deposition transcript | ~150,000 tokens |
+| 170K context window | All of the above, simultaneously |
+
+At 32K context — the common limit for consumer inference setups — you can hold about 25,000 words. That's enough for a chapter, a sprint's worth of code, a meeting transcript. At 170K, you can hold an entire codebase, annotate it, then write code against it in the same conversation. You can process a year's worth of customer support tickets in one pass. You can run legal analysis over full case files without chunking.
+
+The frontier model APIs have offered this — Claude 3.5 Sonnet supports 200K, Gemini 1.5 Pro supports 1M — but at price points that make production use painful. At $3 per million input tokens (Claude Sonnet pricing at time of writing), processing a single 170K-token document costs $0.51 per request. Run 10,000 such requests a month and you're paying $5,100 just in input token costs before generation.
+
+The JohnTheNerd3 setup runs this locally, at over 100 tok/s, for the cost of electricity — approximately $0.11/hour at average US electricity rates for 260W per card.
+
+---
+
+## Part 2: The Hardware — Two RTX 3090s at 48GB Total VRAM
+
+The RTX 3090 was NVIDIA's Ampere-generation flagship consumer GPU, released in September 2020. Its defining characteristic for LLM inference is its memory:
+
+**RTX 3090 Key Specifications:**
+- **VRAM:** 24 GB GDDR6X
+- **Memory Bandwidth:** 936 GB/s
+- **CUDA Cores:** 10,496
+- **Tensor Cores:** 328 (3rd gen, supporting INT4 and INT8)
+- **TDP:** 350W (stock)
+- **NVLink:** Supported (3rd gen, 112 GB/s bidirectional)
+- **PCIe:** 4.0 x16
+- **Current Used Price:** ~$800–$1,000 on eBay/Facebook Marketplace
+
+The critical advantage is that the 3090 has the largest VRAM of any consumer GPU in its generation — matching many datacenter cards from the same era. Two 3090s gives you **48GB of total VRAM**, which is exactly the amount needed to hold a quantized 27B model plus a 170K-token KV cache.
+
+JohnTheNerd3's setup includes **NVLink** — the proprietary high-speed GPU interconnect that NVIDIA includes on the 3090. A 2026 blog by Himesh P. benchmarking 4×RTX 3090 setups found that NVLink improved inference performance by **50%** for 2-GPU tensor-parallel configurations. The conventional wisdom had been that inference throughput doesn't depend on inter-GPU bandwidth — this experiment proved otherwise. With NVLink, all-reduce operations for tensor parallelism move data at 112 GB/s bidirectional rather than routing through PCIe (typically 16–32 GB/s in practice).
+
+**NVLink bridge pricing note:** NVLink bridges for the 3090 range from $70 to $600 on eBay depending on condition and bridge length. JohnTheNerd3 confirmed that without NVLink, performance degrades significantly — though he also noted that `geohot`'s open-source P2P driver for NVIDIA GPUs (`tinygrad/open-gpu-kernel-modules`) may partially replicate this benefit for those without the hardware.
+
+**Power configuration:** Both JohnTheNerd3 and community replicator u/jslominski power-limited their cards. JohnTheNerd3 ran at **260W per card** (vs the stock 350W TDP). Jslominski ran at 280W. Benchmarks from Himesh P.'s work show the throughput sweet spot for RTX 3090 at approximately 220W — beyond that, you get diminishing returns on compute vs power consumption. At 260W, two cards draw a combined 520W under load, which is well within the capacity of a standard gaming PSU.
+
+---
+
+## Part 3: The Model — Qwen3.5 27B Dense (Not MoE)
+
+Qwen3.5 is Alibaba's February 2026 model family. Understanding the lineup is essential before talking about why the 27B dense model was chosen.
+
+### The Qwen3.5 Family
+
+| Model | Type | Total Params | Active Params | Context |
+|---|---|---|---|---|
+| Qwen3.5-0.8B / 2B / 4B / 9B | Dense | Full | Full | 262K |
+| Qwen3.5-27B | Dense | 27B | 27B | 262K |
+| Qwen3.5-35B-A3B | MoE (Sparse) | 35B | ~3B | 262K |
+| Qwen3.5-122B-A10B | MoE (Sparse) | 122B | ~10B | 262K |
+| Qwen3.5-397B-A17B | MoE (Sparse) | 397B | ~17B | 262K |
+
+**Dense vs MoE for inference:** A Mixture-of-Experts model routes each token through only a fraction of its parameters — the 35B-A3B model activates just ~3B parameters per forward pass. This makes MoE models fast for single-token decode but creates complications:
+
+1. **KV cache behavior differs.** Dense models have predictable, uniform KV cache across all layers. MoE models have per-layer variation based on expert routing, and Qwen3.5's MoE variants use a hybrid attention architecture (Gated Delta Networks + sparse MoE) that makes KV cache management more complex.
+
+2. **Memory fragmentation.** Fitting the full 35B parameter set of a MoE model in VRAM while leaving room for a large KV cache requires more aggressive quantization than the 27B dense model.
+
+3. **Throughput for concurrent requests.** In a multi-user serving scenario, dense models tend to batch more efficiently under standard transformer attention assumptions.
+
+The 27B dense model was the Goldilocks choice: large enough to be genuinely capable, small enough (when quantized) to fit in 48GB with headroom for 170K context.
+
+### The Architecture of Qwen3.5 27B
+
+The model card on HuggingFace reveals a novel hybrid architecture — not the standard transformer stack:
+
+```
+Hidden Dimension: 4096 (note: model card from HF shows 4096 for the AWQ quant)
+Number of Layers: 64
+Hidden Layout: 16 × (3 × (Gated DeltaNet → FFN) → 1 × (Gated Attention → FFN))
+```
+
+This is significant. Three out of every four layers use **Gated Delta Networks** — a form of *linear attention* — rather than standard quadratic self-attention. Only one in four layers uses standard Gated Attention with a KV cache.
+
+**What this means for inference:**
+- Linear attention layers have no KV cache growth with sequence length. Their memory footprint is constant regardless of context length.
+- Only the standard Gated Attention layers (1 in 4, so 16 out of 64 layers) accumulate KV cache proportional to context length.
+- This is why 170K context is feasible in 48GB — only 25% of layers contribute to the KV cache.
+
+The Gated DeltaNet layers use:
+- 48 heads (V) and 16 heads (QK), with head dimension 128
+- The Gated Attention layers use 24 Q heads and 4 KV heads (grouped query attention), head dimension 256
+
+The model also ships with a **Multi-Token Prediction (MTP)** head — an auxiliary transformer layer trained to predict the next token from the main model's hidden state. This enables speculative decoding without a separate draft model.
+
+### Benchmark Context
+
+On official benchmarks (MMLU-Pro, GPQA, SWE-bench, LongBench), Qwen3.5-27B is competitive with — and in some tasks exceeds — GPT-5-mini:
+
+| Benchmark | GPT-5-mini | Qwen3.5-27B |
+|---|---|---|
+| MMLU-Pro | 83.7 | 86.1 |
+| GPQA Diamond | 82.8 | 85.5 |
+| IFEval | 93.9 | 95.0 |
+| LongBench v2 | 56.8 | 60.6 |
+| SWE-bench Verified | 72.0 | 72.4 |
+
+This is a model that trades blows with frontier commercial APIs running locally on consumer hardware.
+
+---
+
+## Part 4: The Quantization — AWQ BF16-INT4
+
+JohnTheNerd3 used the `cyankiwi/Qwen3.5-27B-AWQ-BF16-INT4` model from HuggingFace. This is a custom quantization that departs from standard INT4 approaches in a meaningful way.
+
+### Why Not Standard INT4?
+
+Standard INT4 (GPTQ or AWQ) quantizes all model weights to 4-bit integers. For many models, this works well. For Qwen3.5 27B's hybrid architecture, it creates a problem: **linear attention (Gated DeltaNet) layers are significantly more sensitive to quantization errors** than standard attention layers.
+
+The cyankiwi quant uses a mixed-precision strategy:
+- **Linear attention (Gated DeltaNet) layers → BF16** (full precision)
+- **Standard attention and FFN layers → INT4** (AWQ-quantized)
+
+This is why the model is named "AWQ-BF16-INT4" — the BF16 refers to the precision of the linear attention components. The tradeoff: the model is larger than a naive INT4 quantization would be (closer to ~30GB than the ~14GB you'd expect from a pure 4-bit 27B model), but it preserves quality on the components where quantization hurts most.
+
+The model creator confirmed this in a HuggingFace discussion thread:
+> "Yes, it is due to leaving linear attention layers at BF16 to achieve more optimal accuracy, as linear attention is more prone to quantization errors. And as linear attention accounts for a huge portion of the model weights, leaving it at BF16 leads to a large memory size of the quantized model."
+
+**Community verdict on quality:** Multiple commenters who deployed the quant reported surprisingly strong performance. u/robertio1 tested it on complex coding tasks with MCP tools and found quality comparable to Q8 GGUF. The OP himself noted: *"the quality is surprising — I urge you to try it before you mock it."*
+
+**The 4-bit attention controversy:** u/DistanceSolar1449 raised a legitimate concern — running attention at 4 bits is unusual and can cause quality degradation. JohnTheNerd3 pushed back with a key clarification: the Q4_K_XL unsloth GGUF that the commenter cited (as a counterexample of better quantization practice) doesn't actually quantize attention QKV to Q8 as claimed — it uses Q5. The debate highlights that Qwen3.5's hybrid architecture genuinely does need careful quantization strategy.
+
+**Ampere INT4 advantage:** The RTX 3090, as an Ampere GPU, has hardware support for INT4 tensor operations. This means INT4 matrix multiplications execute natively on the tensor cores — not emulated in FP16. This is precisely why the Q4 format outperforms what you might expect: the hardware executes it directly, making it significantly faster than FP8 (which Ampere does not support in hardware — FP8 requires Ada Lovelace or newer).
+
+The vram budget works out as follows:
+- Model weights (AWQ BF16-INT4): approximately 30–32 GB
+- KV cache for 170K context × 16 Gated Attention layers: see Part 6
+- Runtime buffers, CUDA graph memory, FlashInfer workspace: ~2–3 GB
+- Total: fits in 48 GB with roughly 20 MB to spare (per OP's measurement)
+
+---
+
+## Part 5: Multi-GPU Strategy — Tensor Parallelism
+
+With two GPUs, vLLM uses **tensor parallelism (TP)**: each GPU holds a horizontal slice of every weight matrix and processes its slice in parallel, then synchronizes via all-reduce operations.
+
+### How Tensor Parallelism Works
+
+For a weight matrix `W ∈ ℝ^(d_out × d_in)`, tensor parallelism splits along the output dimension:
+- GPU 0: `W_0 ∈ ℝ^(d_out/2 × d_in)`
+- GPU 1: `W_1 ∈ ℝ^(d_out/2 × d_in)`
+
+Both GPUs process the same input activation `x`, producing partial outputs `y_0 = W_0 x` and `y_1 = W_1 x`. An all-reduce operation combines them: `y = y_0 + y_1`.
+
+For the attention layers, the Q/K/V heads are split across GPUs. Qwen3.5 27B has 24 Q heads and 4 KV heads (GQA) in its standard attention layers, and 16 QK heads and 48 V heads in its linear attention layers — both are divisible by 2, so the 2-GPU split works cleanly.
+
+### The All-Reduce Bottleneck (and Why NVLink Matters)
+
+The all-reduce operation happens once per transformer layer per forward pass. The volume of data transferred is:
+
+```
+all-reduce size = 2 × hidden_dim × sizeof(BF16)
+               = 2 × 4096 × 2 bytes
+               = 16.4 KB per layer per token
+```
+
+With 64 layers and a decode step (1 token at a time), that's ~1 MB of inter-GPU data per decode step. Over PCIe 4.0 at practical bandwidths of ~16 GB/s, this adds ~62 μs per step — which at 100 tok/s represents 6.2% overhead.
+
+With NVLink 3 (112 GB/s bidirectional), this drops to ~9 μs — less than 1% overhead. For prefill (where many tokens are processed in parallel), the advantage compounds because a single pass processes hundreds or thousands of tokens simultaneously.
+
+JohnTheNerd3's key insight, later confirmed by commenters: *"my understanding is that the latency is more likely to improve things than the actual bandwidth. Since P2P support is typically locked away by NVIDIA, the all-reduce operation would have to push the data via the CPU."* Without NVLink, PCIe P2P may be blocked for consumer cards, forcing CPU-mediated transfers.
+
+**Practical implication:** If you have two 3090s without NVLink, you can still run this setup, but expect meaningfully lower throughput. jslominski's replication on a non-NVLink pair still achieved 692 tok/s total throughput on 8 requests at 280W power limit — impressive, though JohnTheNerd3's NVLink setup edged it at 585 tok/s *aggregate* at only 260W.
+
+---
+
+## Part 6: Memory Math — KV Cache at 170K Context
+
+This is where the numbers get concrete. Let's work through the KV cache memory calculation from first principles.
+
+### Standard (Full Attention) Layer KV Cache
+
+For each standard Gated Attention layer in Qwen3.5 27B:
+- **KV heads:** 4 (GQA — key and value share 4 heads)
+- **Head dimension:** 256
+- **Precision:** BF16 (2 bytes per element)
+
+Per-layer KV cache for a single token:
+```
+KV_per_token_per_layer = 2 (K and V) × 4 heads × 256 dim × 2 bytes
+                       = 4,096 bytes = 4 KB
+```
+
+For 170,000 tokens across all 16 standard attention layers:
+```
+KV_total = 170,000 × 4,096 bytes × 16 layers
+         = 170,000 × 65,536 bytes
+         = 11.14 GB
+```
+
+This is the KV cache size at 170K context for one request. Note: the linear attention (Gated DeltaNet) layers do **not** contribute to this — they maintain a fixed-size recurrent state that doesn't grow with context length.
+
+If you used standard full-precision KV (FP16 or BF16), 170K context for 8 simultaneous requests would require:
+```
+8 requests × 11.14 GB = 89 GB
+```
+
+That's more than the total VRAM — it's impossible. This is where vLLM's prefix caching and PagedAttention come in.
+
+### How vLLM Fits 170K into 48GB
+
+vLLM doesn't pre-allocate KV cache for all requests at full context length. Instead, it uses **PagedAttention** — a paged virtual memory system for KV cache:
+
+1. **Block-based allocation:** KV cache is allocated in fixed-size blocks (32 tokens each in this setup, per the `--block-size 32` flag). Blocks are allocated on demand, not pre-reserved.
+
+2. **Prefix caching (`--enable-prefix-caching`):** Identical prompt prefixes share KV cache blocks. In a multi-user scenario where all users start with the same system prompt, the prefill for that shared prefix runs once — subsequent requests reuse the cached blocks.
+
+3. **GPU memory utilization budget:** With `--gpu-memory-utilization=0.9`, vLLM reserves 90% of available VRAM (43.2 GB out of 48 GB) for model weights plus KV cache. After loading the ~30 GB model, ~13 GB remains for KV cache blocks.
+
+4. **`--max-num-batched-tokens=2048`:** This limits the maximum tokens processed in a single prefill batch, preventing a single long-context request from monopolizing prefill capacity and starving other in-flight requests.
+
+The OP confirmed: *"it basically takes up the entire cards. I think I have like 20MB free VRAM? I also run headless Linux just to make sure vLLM gets every bit of the VRAM, the OS VRAM usage is under 1MB."*
+
+**Headless Linux:** On Linux without a display server, the GPU has zero VRAM allocated for desktop rendering. This recovers 200–500 MB compared to running a desktop environment — meaningful margin when your buffer is 20 MB.
+
+### Optional: FP8 KV Cache
+
+A community member's gist (Quentin-M on GitHub) shows an alternate configuration using FP8 KV cache to push to 170K context even under heavier loads:
+
+```yaml
+# Optional: larger context window w/ fp8 kv cache:
+#   --max-model-len=170000
+#   --kv-cache-dtype fp8
+```
+
+FP8 KV cache halves the KV cache memory footprint at the cost of slight quality degradation in very long sequences. For the base 170K setup at 90% memory utilization, FP8 KV is optional — the standard BF16 KV fits with careful configuration.
+
+---
+
+## Part 7: The Speed Stack — MTP Speculative Decoding
+
+The performance numbers that stunned the community — 100+ tok/s decode and ~1500 tok/s prefill — are not purely a function of hardware. They require the full vLLM software stack, and critically: **Multi-Token Prediction (MTP) speculative decoding**.
+
+### What MTP Does
+
+Qwen3.5 27B ships with a built-in MTP head — an additional lightweight transformer layer trained alongside the main model to predict the *next* token from the main model's hidden state. This enables speculative decoding without loading a separate draft model:
+
+1. **Draft phase:** The MTP head generates N candidate tokens in parallel.
+2. **Verify phase:** The main model verifies all N candidates in a single forward pass (processing N+1 tokens simultaneously).
+3. **Accept/reject:** Accepted tokens advance the sequence. If a candidate is rejected, generation continues from that point.
+
+When acceptance is high (which it tends to be for common patterns like code, structured text, and predictable prose), MTP effectively doubles or triples the number of tokens generated per forward pass. The OP observed acceptance lengths *"above 3 for coding-related tasks"* — meaning an average of 3+ tokens per verification step, effectively tripling throughput on coding workloads.
+
+vLLM implements this via the `--speculative-config` flag:
+
+```bash
+--speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":5}'
+```
+
+The OP used 5 speculative tokens. Community member Quentin-M's gist uses 4 (noting that 5 was buggy at the time of posting — the bug was subsequently fixed and the fix merged to upstream vLLM).
+
+**MTP vs llama.cpp:** At the time of the post, llama.cpp did not support MTP. The OP identified this as one of the primary reasons vLLM dramatically outperforms llama.cpp for this model: *"MTP support just isn't in llama.cpp yet. This makes an insane difference. Doubling speed is common."*
+
+### FlashInfer Attention Backend
+
+The configuration uses `--attention-backend FLASHINFER` rather than the default FlashAttention. FlashInfer is a specialized CUDA kernel library optimized for:
+- Paged KV cache access (matching vLLM's PagedAttention storage format)
+- Mixed prefill/decode batching (handling requests at different stages simultaneously)
+- Decode-phase attention (efficient single-token attention against a large KV cache)
+
+For hybrid attention models like Qwen3.5, the FlashInfer backend handles both the linear attention (Gated DeltaNet) layers and standard attention layers without forcing unnecessary overhead.
+
+### The -O3 Flag
+
+vLLM's `-O3` optimization flag enables maximum compilation optimization, including:
+- CUDA graph capture for decode-phase kernel fusion
+- Aggressive kernel specialization for the specific GPU architecture
+- Memory layout optimizations for the specific model configuration
+
+The startup time increases substantially with `-O3` (15–30 minutes for initial compilation), but subsequent launches reuse cached compiled kernels from `~/.cache/vllm` and `~/.cache/torch`.
+
+---
+
+## Part 8: The Full Configuration
+
+Here is the complete vLLM command that JohnTheNerd3 ran, reconstructed from the post and community comments:
+
+```bash
+vllm serve cyankiwi/Qwen3.5-27B-AWQ-BF16-INT4 \
+  --served-model-name qwen3.5-27b \
+  --quantization compressed-tensors \
+  --max-model-len 170000 \
+  --max-num-seqs 8 \
+  --block-size 32 \
+  --max-num-batched-tokens 2048 \
+  --enable-prefix-caching \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder \
+  --reasoning-parser qwen3 \
+  --attention-backend FLASHINFER \
+  --speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":5}' \
+  --tensor-parallel-size 2 \
+  --gpu-memory-utilization 0.9 \
+  -O3 \
+  --no-use-tqdm-on-load \
+  --host 0.0.0.0 \
+  --port 8000
+```
+
+**For Docker deployment**, here's the Compose configuration shared by community member Quentin-M on GitHub Gist (created March 14, 2026):
+
+```yaml
+services:
+  vllm:
+    image: vllm/vllm-openai:nightly
+    container_name: vllm
+    ipc: host
+    ports:
+      - "8000:8000"
+    volumes:
+      - vllm-models:/root/.cache/huggingface
+      - vllm-compile:/root/.cache/vllm
+      - vllm-flashinfer:/root/.cache/flashinfer
+      - vllm-torch:/root/.cache/torch
+      - vllm-triton:/root/.triton
+    environment:
+      - VLLM_WORKER_MULTIPROC_METHOD=spawn
+      - VLLM_SLEEP_WHEN_IDLE=1
+      - VLLM_ENABLE_CUDAGRAPH_GC=1
+      - VLLM_USE_FLASHINFER_SAMPLER=1
+      - RAY_memory_monitor_refresh_ms=0
+      - TORCHINDUCTOR_CACHE_DIR=/root/.cache/torch/inductor
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: >
+      -O3
+      --model cyankiwi/Qwen3.5-27B-AWQ-BF16-INT4
+      --served-model-name local
+      --quantization compressed-tensors
+      --max-model-len=150000
+      --max-num-seqs=8
+      --block-size 32
+      --max-num-batched-tokens=2048
+      --enable-prefix-caching
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --attention-backend FLASHINFER
+      --tensor-parallel-size=2
+      --gpu-memory-utilization=0.90
+      --trust-remote-code
+      --disable-custom-all-reduce
+      --speculative-config '{"method":"qwen3_next_mtp","num_speculative_tokens":4}'
+```
+
+**Key environment variables explained:**
+- `VLLM_WORKER_MULTIPROC_METHOD=spawn`: Required for multi-GPU setups on Linux to prevent CUDA context conflicts
+- `VLLM_SLEEP_WHEN_IDLE=1`: Reduces power consumption when no requests are being processed
+- `VLLM_ENABLE_CUDAGRAPH_GC=1`: Enables garbage collection of CUDA graph memory between requests
+- `RAY_memory_monitor_refresh_ms=0`: Disables Ray's memory monitor (which can cause false OOM kills)
+
+**For WSL2 users:** Add `--disable-custom-all-reduce` to the command. vLLM's custom NCCL all-reduce implementation can conflict with WSL2's GPU passthrough layer.
+
+### Installing vLLM for Qwen3.5
+
+The base vLLM release on PyPI does not support Qwen3.5's novel architecture — you need the nightly build or the specific PR that added Qwen3-Next (which has since been merged to the main branch as of early March 2026):
+
+```bash
+uv pip install vllm --torch-backend=auto \
+  --extra-index-url https://wheels.vllm.ai/nightly
+```
+
+Or using pip:
+
+```bash
+pip install vllm --extra-index-url https://wheels.vllm.ai/nightly
+```
+
+---
+
+## Part 9: Breaking Down the Numbers
+
+Let's verify the performance claims against what we'd expect from first principles.
+
+### Decode Speed: Why 100+ tok/s Is Physically Achievable
+
+LLM decode throughput for a single request is primarily **memory-bandwidth bound** — each forward pass must stream the entire model's weight matrices from VRAM to compute units once per generated token.
+
+For two RTX 3090s at 936 GB/s each:
+```
+Total memory bandwidth = 2 × 936 GB/s = 1,872 GB/s
+```
+
+The effective model weight size for an AWQ INT4 model with BF16 linear attention is approximately 30–32 GB. In pure bandwidth-bound decode, the maximum theoretical tok/s is:
+
+```
+Max decode tok/s ≈ 1,872 GB/s ÷ 32 GB/token ≈ 58.5 tok/s
+```
+
+But wait — the actual result is *100+ tok/s*, which exceeds this naive estimate. How?
+
+**MTP is the answer.** With 5 speculative tokens and an acceptance rate of 3+ tokens per verification step, the effective throughput multiplier approaches 3–4×. The model generates 3–4 tokens per forward pass instead of 1:
+
+```
+Effective decode tok/s = 58.5 × ~2.5 acceptance multiplier ≈ 146 tok/s
+```
+
+This is consistent with the 100+ reported (the actual number depends on workload and acceptance rate variation). The memory bandwidth math checks out.
+
+### Prefill Speed: 1500 tok/s
+
+During prefill, the model processes all prompt tokens in parallel — this is a compute-bound operation (matrix multiplications) rather than memory-bandwidth-bound. The RTX 3090's 71.2 TFLOPS (BF16) and INT4 hardware acceleration (which roughly doubles effective throughput for weight matrices) enable extremely fast prefill.
+
+For a prompt of 2,048 tokens (the `--max-num-batched-tokens` limit), the model processes all tokens simultaneously in a single forward pass. The 1,500 tok/s prefill figure implies approximately 1.37 seconds per 2,048-token batch — plausible given the hardware and quantization.
+
+Community member u/TacGibs, running **four** RTX 3090s (PCIe 4.0 × 4) with vLLM nightly and the full precision 27B model, reported ~66 tok/s decode. This is consistent — running at full BF16 without MTP and with PCIe-only inter-GPU bandwidth (no NVLink) would be expected to be significantly slower.
+
+### Throughput for 8 Simultaneous Requests: 585 tok/s
+
+The 585 tok/s aggregate figure comes from continuous batching — vLLM's scheduler processes all in-flight requests together, maximizing hardware utilization.
+
+The math: if each individual request sees ~73 tok/s (585 ÷ 8), this is lower than the single-request 100+ tok/s. This is expected — batching 8 requests increases memory pressure (more KV cache blocks allocated simultaneously) and can reduce MTP acceptance rates (as the speculative tokens must be valid for each request in the batch independently).
+
+The 585 tok/s figure represents excellent concurrent throughput for a consumer GPU setup. For comparison, a cloud API serving Qwen3.5-27B at comparable quality would typically deliver 80–150 tok/s aggregate for 8 users at much higher cost.
+
+---
+
+## Part 10: Cost Analysis — DIY vs Cloud
+
+Let's run the numbers for a production use case: serving 8 concurrent users at 170K context.
+
+### DIY Setup Cost
+
+| Component | Cost |
+|---|---|
+| 2× RTX 3090 (used, eBay) | ~$1,800 |
+| NVLink Bridge (used) | ~$150–200 |
+| Motherboard (dual-slot, PCIe 4.0) | ~$300–500 |
+| CPU (AMD Threadripper / Intel HEDT) | ~$300–600 |
+| RAM (64 GB DDR5) | ~$150 |
+| PSU (1200W) | ~$150 |
+| NVMe SSD (2 TB) | ~$100 |
+| **Total Hardware** | **~$2,950–3,350** |
+
+**Ongoing costs:**
+- Power: 2 × 260W + system overhead ≈ 600W total = 0.6 kWh/hour
+- At $0.12/kWh US average: **$0.072/hour**
+- Monthly (24/7 operation): **~$52/month in electricity**
+
+### Cloud GPU Comparison
+
+Per gpucost.org (March 2026 data), comparable cloud GPU pricing:
+- RTX 3090: **$0.081/hour** per GPU (cheapest provider)
+- A100 80GB: **$1.15/hour** per GPU
+- H100 SXM: **$2.10/hour** per GPU
+
+For the equivalent 2×3090 setup in the cloud:
+- 2× RTX 3090: ~$0.162/hour (assuming available — 3090s in cloud are rare)
+
+To match the KV cache and context capacity with cloud GPUs, you'd realistically need an A100 80GB:
+- 1× A100 80GB: **$1.15/hour**
+
+But the A100 single-card setup won't match the throughput of 2×3090 with MTP. To get equivalent throughput with cloud hardware:
+- 2× A100 80GB: **$2.30/hour**
+
+**Break-even analysis:**
+```
+Hardware cost ÷ (cloud hourly cost - electricity hourly cost)
+= $3,150 ÷ ($2.30 - $0.072)
+= $3,150 ÷ $2.228
+≈ 1,414 hours ≈ 59 days of continuous operation
+```
+
+At 8 hours/day of actual use: break-even at **~6 months**. After that, the DIY setup is running at $0.072/hour versus $2.30/hour for equivalent cloud capacity — a **32× cost reduction**.
+
+### Token Economics
+
+At the $0.072/hour electricity cost and 585 tok/s output throughput:
+```
+Cost per 1M output tokens = $0.072/hour ÷ (585 tok/s × 3,600 s/hr ÷ 1,000,000)
+                          = $0.072 ÷ 2.106
+                          = $0.034 per 1M output tokens
+```
+
+Compare to API pricing (approximate March 2026):
+- Claude 3.5 Sonnet output: ~$3.00 per 1M tokens
+- GPT-4o output: ~$2.50 per 1M tokens
+
+The DIY setup delivers output tokens at **~88× lower marginal cost** than frontier model APIs, with a model that competes on several benchmarks.
+
+---
+
+## Part 11: Limitations, Gotchas, and Honest Tradeoffs
+
+The r/LocalLLaMA thread surfaced several real limitations that deserve direct treatment.
+
+### 1. Quantization Quality Tradeoffs
+
+The BF16-INT4 quant is impressive but not lossless. Community member u/DistanceSolar1449 raised a legitimate question: *"What's the PPL? And/or KLD? Quantizing any attn_* is especially sensitive for hybrid architectures."*
+
+The OP didn't provide perplexity measurements. Real production deployments should run their own evaluation on representative workloads before committing. For coding and general reasoning, the qualitative reports are positive. For tasks requiring high numerical precision or unusual token distributions, verify empirically.
+
+### 2. Context Length Scaling Issues
+
+u/Tereadol noted an important practical limit: pushing to higher context lengths requires careful tuning of `--gpu-memory-utilization`. The GPU memory profiler in vLLM is not perfectly accurate for hybrid attention architectures, and the system can over-estimate available KV cache blocks and crash under high load.
+
+The fix: reduce `--gpu-memory-utilization` slightly if you see OOM crashes under concurrent load, even if single-request testing seemed fine. The OP confirmed: *"I always had trouble with larger GPU utilization. I find that the profiler isn't very accurate so it over-estimates the token allocation and crashes at high load."*
+
+### 3. MTP Stability Bugs
+
+The `num_speculative_tokens=5` setting had a known bug at the time of the post (tracked at `github.com/vllm-project/vllm/issues/37035`). Using 4 speculative tokens was the stable alternative. As of the ISLITASHEET's comment, the relevant PR has been merged to upstream — check the current vLLM version before using 5+ speculative tokens.
+
+### 4. Tool Calling Bugs on Nightly
+
+u/Sufficient-Rent6078 and others noted that the vLLM nightly build was missing a tool call fix at the time of the post. JohnTheNerd3 warned: *"Beware: the nightly is missing the tool call fix — you might get incorrect tool calls at times!"* The post directed users to a specific PR (`vllm-project/vllm/pull/35615`) that has since been merged.
+
+### 5. Infinite Loop / Token Budget Exhaustion at Long Context
+
+u/Equivalent-Home-223 reported infinite loops when using the setup with RooCode at 90K context. This appears to be an interaction between the model's thinking mode and the 170K context — when the model is given too long a context with complex reasoning tasks, it can enter loops that exhaust the token budget. Setting explicit reasoning budget limits in the client or using instruct (non-thinking) mode for agentic tasks mitigates this.
+
+### 6. Hardware Availability
+
+Good 3090s are increasingly scarce on the secondhand market as they age into the AI-specific demand spike. The used price has held around $800–1,000 — significantly higher than immediately post-RTX 4000 launch. NVLink bridges for the 3090 require specific physical compatibility with your card models (Founders Edition vs AIB).
+
+### 7. llama.cpp Users Are Left Behind — For Now
+
+For users without a dedicated Linux server setup, this configuration requires vLLM. The setup does not work in llama.cpp (no MTP support), LM Studio, or Ollama. The performance delta is stark: u/overand reported 34 tok/s with llama.cpp Q4_K_M vs JohnTheNerd3's 100+ tok/s with vLLM and MTP. That's a 3× gap attributable primarily to the MTP speculative decoding.
+
+JohnTheNerd3's balanced take: *"I don't think it's fair to compare the two this way. llama.cpp actually does a lot better in many cases — offloading, KV cache quantization, decode for single-user inference, VRAM efficiency."* Use the right tool for the job.
+
+---
+
+## Part 12: Recommended Sampling Parameters
+
+Qwen3.5 27B has thinking mode enabled by default. For different workloads:
+
+**Thinking mode for general tasks:**
+```json
+{
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_penalty": 1.5
+}
+```
+
+**For precise coding tasks (WebDev, SWE):**
+```json
+{
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "top_k": 20,
+  "min_p": 0.0,
+  "presence_penalty": 0.0
+}
+```
+
+**To disable thinking mode entirely** (for faster agentic loops where reasoning chains add latency without benefit):
+```python
+response = client.chat.completions.create(
+    model="qwen3.5-27b",
+    messages=messages,
+    extra_body={
+        "top_k": 20,
+        "chat_template_kwargs": {"enable_thinking": False},
+    },
+)
+```
+
+---
+
+## Part 13: What This Represents
+
+The JohnTheNerd3 post is evidence of a specific inflection point in local LLM inference — one that the community has been approaching for two years and has now crossed.
+
+The Qwen3.5 27B dense model's hybrid architecture (Gated DeltaNet + standard attention) is purpose-built for long context in constrained VRAM. Only 25% of layers contribute to KV cache growth. The MTP head provides speculative decoding without a second model. The AWQ BF16-INT4 quantization scheme exploits Ampere's native INT4 hardware support while preserving the linear attention layers at full precision.
+
+What vLLM provides on top: PagedAttention for flexible memory, continuous batching for multi-user throughput, FlashInfer for efficient paged KV attention, and a production-grade API server. The combination, on 2026-era used consumer hardware, beats what you'd have gotten from a $32,000 A100 server in 2022 — in both context length and throughput.
+
+The next step is obvious: as RTX 4090s age into the secondhand market at comparable price points (their 24 GB VRAM matches the 3090, with significantly higher compute), expect the same configuration to achieve proportionally better decode throughput. And as vLLM continues maturing its hybrid attention support, the performance ceiling will keep rising.
+
+The infrastructure story for 100K+ context local inference is no longer "when will hardware get there?" It's "here is the exact command."
+
+---
+
+## References
+
+1. **Original Reddit Post:** u/JohnTheNerd3, "Running Qwen3.5 27b dense with 170k context at 100+t/s decode and ~1500t/s prefill on 2x3090," r/LocalLLaMA, March 1, 2026. [reddit.com/r/LocalLLaMA/comments/1rianwb](https://reddit.com/r/LocalLLaMA/comments/1rianwb)
+
+2. **Qwen3.5-27B Model Card:** Qwen Team, Alibaba Cloud. Hugging Face: [huggingface.co/Qwen/Qwen3.5-27B](https://huggingface.co/Qwen/Qwen3.5-27B)
+
+3. **cyankiwi/Qwen3.5-27B-AWQ-BF16-INT4 Quantization:** Custom mixed-precision quantization for the hybrid architecture. [huggingface.co/cyankiwi/Qwen3.5-27B-AWQ-BF16-INT4](https://huggingface.co/cyankiwi/Qwen3.5-27B-AWQ-BF16-INT4)
+
+4. **vLLM PagedAttention Paper:** Kwon et al., "Efficient Memory Management for Large Language Model Serving with PagedAttention," arXiv:2309.06180 (2023). The foundational paper describing vLLM's KV cache management approach.
+
+5. **vLLM Qwen3.5 Usage Guide:** Official vLLM recipe documentation covering serving configurations for the full Qwen3.5 family. [docs.vllm.ai/projects/recipes/en/latest/Qwen/Qwen3.5.html](https://docs.vllm.ai/projects/recipes/en/latest/Qwen/Qwen3.5.html)
+
+6. **VLLM Performance Benchmarks: 4x RTX 3090:** Himesh P., March 2025. Empirical measurements of NVLink impact on inference throughput (50% improvement for 2-GPU TP). [himeshp.blogspot.com/2025/03/vllm-performance-benchmarks-4x-rtx-3090.html](https://himeshp.blogspot.com/2025/03/vllm-performance-benchmarks-4x-rtx-3090.html)
+
+7. **Quentin-M Docker Compose Gist:** Community-contributed Docker configuration for 2×RTX 3090 + WSL + vLLM + Qwen3.5-27B-AWQ-BF16-INT4. [gist.github.com/Quentin-M/5d1426863d41d6df4b2cc998723df8e7](https://gist.github.com/Quentin-M/5d1426863d41d6df4b2cc998723df8e7)
+
+8. **NodeNestor/qwen3.5-27b-mtp-llamacpp:** GitHub repository documenting Qwen3.5's MTP head architecture for speculative decoding. [github.com/NodeNestor/qwen3.5-27b-mtp-llamacpp](https://github.com/NodeNestor/qwen3.5-27b-mtp-llamacpp)
+
+9. **GPU Pricing Data (March 2026):** gpucost.org comparative GPU cloud pricing. RTX 3090 at $0.081/hour; A100 80GB at $1.15/hour.
+
+10. **tinygrad/open-gpu-kernel-modules:** geohot's open-source NVIDIA GPU kernel modules enabling P2P inter-GPU communication without NVLink on consumer cards. [github.com/tinygrad/open-gpu-kernel-modules](https://github.com/tinygrad/open-gpu-kernel-modules)

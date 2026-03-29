@@ -1,0 +1,550 @@
+---
+title: "Beyond TurboQuant: Clifford Rotors for KV Cache Compression"
+description: "RotorQuant replaces Google's TurboQuant dense rotation matrix with Clifford algebra rotors — achieving 10–19× speedup on NVIDIA, 9–31× on Apple Silicon, and 44× fewer parameters while matching attention fidelity on real models. Here's everything you need to know."
+pubDate: 2026-03-29
+coverImage: "https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=1200&h=600&fit=crop"
+coverAlt: "Abstract geometric rotation visualization — spiraling light forms suggesting multidimensional algebra"
+author: "default"
+tags: ["quantization", "kv-cache", "geometric-algebra", "clifford", "llm", "cuda", "metal", "research"]
+draft: false
+series: "LocalLLaMA Gold"
+seriesOrder: 4
+---
+
+Something interesting happened in the 48 hours after Google's TurboQuant paper dropped. Within two days of the March 24, 2026 blog post from Google Research, a developer named John D. Pope published a technical report on [scrya.com](https://www.scrya.com/rotorquant/) that replaced TurboQuant's core rotation mechanism wholesale — and made it 10 to 19 times faster in the process.
+
+That might sound like a benchmark trick. It isn't. The underlying mathematics is genuinely elegant, and the code is real, tested, and already the subject of a [vLLM feature request](https://github.com/vllm-project/vllm/issues/38291). The approach borrows from a branch of mathematics called *geometric algebra* — specifically, an object called a **Clifford rotor** — and it's worth understanding why, because rotors are going to keep showing up in ML research.
+
+This post is a deep dive into RotorQuant: the math behind it, the engineering that makes it fast, and why it matters for the future of KV cache compression.
+
+---
+
+## The Problem: KV Cache Is the Bottleneck
+
+Before we can appreciate the solution, we need to understand what's being solved. When a large language model generates text, it must retain the *key* and *value* vectors for every token it has seen — across every attention head, across every layer. This is the KV cache, and it grows linearly with context length.
+
+The numbers are blunt: an 8K-token context on Qwen2.5-3B (36 layers, d=128 per head) consumes **289 MB in FP16** just for the cache. On a 24 GB GPU, the cache — not the model weights — becomes the primary constraint for long-context inference. Scale to 32K or 128K tokens and the problem becomes acute.
+
+Vector quantization compresses these vectors by reducing their precision: instead of storing 16-bit floats, you store 3-bit or 4-bit integers drawn from a precomputed codebook. The challenge is doing this without destroying the geometric relationships — especially inner products — that attention depends on.
+
+### What TurboQuant Did Right
+
+Google's TurboQuant, presented at ICLR 2026 ([arXiv:2504.19874](https://arxiv.org/abs/2504.19874)), cracked this with a beautifully simple two-stage approach:
+
+**Stage 1 — Rotation + Scalar Quantization (PolarQuant):**  
+Take a vector `v ∈ ℝ^d`. Multiply it by a fixed, random orthogonal matrix `Q` (generated via QR decomposition on a Gaussian matrix): `v' = Qv`. This rotation *mixes* all coordinates so thoroughly that each resulting coordinate follows a concentrated Beta distribution — predictable, nearly Gaussian, with bounded range. That property lets you apply a precomputed Lloyd-Max scalar quantizer independently to every coordinate and get near-optimal compression.
+
+**Stage 2 — QJL Residual Correction:**  
+The rotation-then-quantize step minimizes MSE, but it introduces bias into inner product estimates. The second stage applies a 1-bit Quantized Johnson-Lindenstrauss transform to the residual error, acting as a mathematical error-checker that makes inner product estimates unbiased.
+
+The result: 3-bit KV cache compression with 99.5% attention cosine similarity, lossless on benchmark tasks, and no calibration data required. It runs online, quantizing each KV vector the moment it's produced.
+
+**The bottleneck:** That random orthogonal matrix `Q` is `d × d`. For d=128 (standard attention head dimension), that's **16,384 parameters** and **16,384 multiply-adds per vector**. For d=4096, it's 16.7 million parameters. The matrix multiply is fast on modern BLAS, but it's dense, memory-bound, and takes up significant model storage.
+
+---
+
+## Enter Geometric Algebra: A Gentle Introduction
+
+To understand RotorQuant, you need to understand what a **Clifford rotor** is. The good news is that you've probably already used one — every game engine, every physics simulator, and every 3D graphics pipeline uses them under the name of *quaternions*. Clifford rotors are the generalization.
+
+### Why Standard Matrices Are "Overkill" for Rotations
+
+Here's the insight that makes RotorQuant possible. A `d × d` orthogonal matrix can represent *any* linear transformation that preserves lengths and angles: reflections, rotations, combinations thereof. But for TurboQuant's purpose — decorrelating coordinates — you only need **rotations**. A rotation in 3D space can be described by two things: an axis (which direction to spin around) and an angle (how far to spin). That's 4 numbers, not 9 (or 16,384 for d=128).
+
+Clifford algebra gives you the mathematical machinery to express rotations compactly and compose them cleanly, without the redundancy of a full matrix.
+
+### What Is Clifford Algebra?
+
+Clifford algebra (also called *geometric algebra*) was developed by the British mathematician William Kingdon Clifford in 1878, building on Grassmann's work on exterior algebra and Hamilton's quaternions. The fundamental idea is to build an algebra over a vector space where the product of two vectors is meaningful and carries geometric information.
+
+In ordinary linear algebra, the dot product of two vectors gives a scalar (their "similarity"), and the cross product gives a third vector (their "perpendicularity"). In geometric algebra, these two operations are unified into a single product:
+
+```
+uv = u · v + u ∧ v
+```
+
+The first term `u · v` is the familiar inner product (a scalar). The second term `u ∧ v` is the *outer product* or *wedge product* — a new kind of object called a **bivector** that represents the oriented plane spanned by `u` and `v`. Bivectors are not vectors; they're two-dimensional analogues of vectors, encoding both the plane and an orientation (clockwise vs. counterclockwise).
+
+The full space of objects in Clifford algebra Cl(3,0) — three dimensions, all positive signature — has 8 components:
+
+| Grade | Basis Elements | Count | Geometric Meaning |
+|-------|---------------|-------|-------------------|
+| 0 | `1` | 1 | Scalar |
+| 1 | `e₁, e₂, e₃` | 3 | Vectors |
+| 2 | `e₁₂, e₁₃, e₂₃` | 3 | Bivectors (oriented planes) |
+| 3 | `e₁₂₃` | 1 | Pseudoscalar (oriented volume) |
+
+This 8-component object is called a **multivector**. The basis vectors satisfy `eᵢeᵢ = +1` (positive signature) and `eᵢeⱼ = -eⱼeᵢ` for `i ≠ j` (anticommutativity for distinct basis elements).
+
+### Rotors: Rotations Without Matrices
+
+Here's where it gets useful. In Cl(3,0), a **rotor** is defined as:
+
+```
+R = exp(B/2) = cos(θ/2) + sin(θ/2) · B̂
+```
+
+Where `B` is a *unit bivector* (representing the plane of rotation) and `θ` is the rotation angle. Note the `/2` — this is the same "double-cover" property that makes quaternions work (you need to rotate by 2θ in the rotor to get θ in physical space).
+
+A rotor has only **4 non-zero components**: the scalar part and the three bivector components (e₁₂, e₁₃, e₂₃). The vector and pseudoscalar parts are zero by construction.
+
+To rotate a vector `v` using this rotor, you compute the **sandwich product**:
+
+```
+v' = R v R̃
+```
+
+Where `R̃` (called the *reverse* of R) is obtained by flipping the sign of all grade-2 and grade-3 components. This sandwich product:
+- Preserves the norm of `v` (length is unchanged)
+- Preserves inner products (angles between vectors are unchanged)  
+- Is a proper rotation (no reflections mixed in)
+- Requires only **28 floating-point multiply-adds** (instead of 64 for a general geometric product, because R has only 4 non-zero components)
+
+### How Rotors Relate to Quaternions and Complex Numbers
+
+The family tree is elegant:
+
+- **Complex numbers** ≅ even subalgebra of Cl(2,0): encode 2D rotations with 2 parameters
+- **Quaternions** ≅ even subalgebra of Cl(3,0): encode 3D rotations with 4 parameters  
+- **Clifford rotors** in Cl(n,0): encode rotations in n-dimensional space, composable and geometrically complete
+
+Every quaternion is a Clifford rotor in Cl(3,0). RotorQuant uses exactly this subalgebra — Cl(3,0) with 3 spatial dimensions — which is why each rotor has 4 parameters and why the math maps directly to what game engines have been doing for decades.
+
+---
+
+## RotorQuant's Core Insight: Block-Diagonal Beats Dense
+
+RotorQuant's key insight is deceptively simple: **you don't need a global d×d rotation to decorrelate coordinates for Lloyd-Max quantization**. You can chunk the d-dimensional vector into groups of 3 and rotate each group independently with its own cheap rotor.
+
+For d=128, this means:
+- **43 groups** of 3 dimensions each (plus 1 dimension of padding)
+- **1 rotor per group** = 4 parameters per group
+- **Total parameters: ~372** vs. TurboQuant's 16,399 — **44× fewer**
+
+This block-diagonal structure means rotations never mix information across groups. A commenter on the Reddit post ([u/Juan_Valadez](https://www.reddit.com/r/LocalLLaMA/comments/1s44p77/)) correctly identified the theoretical tradeoff:
+
+> *"TurboQuant's strength comes from global random rotation (Haar), which spreads energy across all dimensions and induces the coordinate distribution that makes scalar quantization near-optimal. RotorQuant only mixes within 3D blocks, so it fundamentally cannot reproduce that property."*
+
+This is true on synthetic worst-case vectors (like one-hot vectors), where TurboQuant's global mixing keeps max coordinate magnitude low across all 128 dimensions while RotorQuant can only spread energy within each 3-block. The consequence: RotorQuant's synthetic MSE is measurably higher at all bit-widths.
+
+The critical empirical finding — RotorQuant's major bet — is that **real KV cache vectors from trained LLMs are not adversarial**. They're not one-hot. They're already somewhat decorrelated by the model's training dynamics, and within-group rotation is sufficient to bring coordinate distributions close enough to the Beta shape that Lloyd-Max needs. The QJL residual correction then handles the remainder.
+
+The real-model benchmarks on Qwen2.5-3B-Instruct validate this bet:
+
+| Context | Bits | Method | Cosine Sim | Top-1 | Top-5 |
+|---------|------|--------|------------|-------|-------|
+| 2K | 3-bit | TurboQuant | 0.9906 | 81.2% | 93.8% |
+| 2K | 3-bit | RotorQuant | 0.9903 | 81.2% | 93.8% |
+| 4K | 3-bit | TurboQuant | 0.9875 | 81.2% | 87.5% |
+| 4K | 3-bit | RotorQuant | 0.9870 | 81.2% | **93.8%** |
+| 4K | 4-bit | TurboQuant | 0.9880 | 75.0% | 93.8% |
+| 4K | 4-bit | RotorQuant | 0.9874 | **81.2%** | 93.8% |
+
+At 4K context, RotorQuant *outperforms* TurboQuant on top-1 and top-5 retrieval accuracy despite a tiny cosine similarity deficit. The Clifford rotor decorrelation appears to preserve the directional structure of real attention heads better than the global Haar rotation at longer contexts. This is not yet fully understood theoretically — it's an interesting open question.
+
+---
+
+## The Architecture: How RotorQuant Differs from TurboQuant
+
+Here is the full pipeline comparison:
+
+### TurboQuant Pipeline
+```
+v ∈ ℝ^d
+  → Π × v    (d×d matmul: 16,384 FMAs for d=128)
+  → Lloyd-Max quantize each coordinate
+  → Store quantized indices + QJL 1-bit residual
+```
+
+### RotorQuant Pipeline
+```
+v ∈ ℝ^d
+  → Split into ceil(d/3) groups of 3 dimensions
+  → Embed each group as grade-1 Cl(3,0) multivector: [0, v₁, v₂, v₃, 0, 0, 0, 0]
+  → Apply rotor sandwich per group: R × mv × R̃  (28 FMAs, sparse)
+  → Grade-aware Lloyd-Max quantize (separate codebooks for grade-1 components)
+  → Drop zero grades (grade-0, grade-2, grade-3 are zero after sandwich of grade-1 input)
+  → Store 129 indices per vector + QJL 1-bit residual
+```
+
+The embedded multivector is always grade-1 (only e₁, e₂, e₃ components set). After the sandwich product `R v R̃` with a rotor R (even grade), the result is still grade-1. This is a fundamental algebraic property: rotors preserve grade. The scalar, bivector, and pseudoscalar components stay zero, which means you only need to store 3 numbers per group — matching TurboQuant's index count.
+
+### Grade Elimination: The Algebraic Shortcut
+
+The RotorQuant technical report highlights an elegant optimization: because the input is always a pure grade-1 multivector (a plain vector), and because rotors are even-grade elements, the sandwich product `R v R̃` always produces a pure grade-1 output. All other grades are provably zero.
+
+This means the code can skip 5 of the 8 multivector components entirely during the sandwich product computation — reducing the effective FMA count from the theoretical 64 (full geometric product) down to 28 for each half of the sandwich, with further savings from the zero structure. The full pipeline clocks in at approximately **~100 FMAs per vector** total, compared to TurboQuant's **16,384 FMAs** for the rotation alone.
+
+That's a **160× reduction in floating-point operations** for the rotation step.
+
+### The Non-Commutativity Trap
+
+One subtle implementation detail that the README flags explicitly: the sandwich product `R v R̃` must be computed as `(R * v) * R̃` — a *left* product for the first step and a *right* product for the second step. Clifford algebra is non-commutative (just like quaternion multiplication), so `R * v ≠ v * R` in general. Getting the order wrong produces the *wrong* rotation, not a rotor-algebra error that fails visibly. This is the kind of bug that would give incorrect but plausible-looking results.
+
+---
+
+## The 44× Parameter Reduction: Where the Numbers Come From
+
+Let's be precise about the parameter accounting.
+
+**TurboQuant parameters per attention head (d=128):**
+- Random orthogonal matrix Q: 128 × 128 = **16,384 parameters**
+- Lloyd-Max codebook (shared): negligible (precomputed scalar quantizer)
+- QJL random projection: 128 bits = **16 bytes**
+- **Total: ~16,399 parameters**
+
+**RotorQuant parameters per attention head (d=128):**
+- Rotors: ceil(128/3) = 43 groups × 4 parameters = **172 rotor parameters** (scalar + 3 bivectors per group)
+- Norm storage: 43 group norms = **43 floats** (for norm separation trick)
+- Lloyd-Max codebook: ~128 centroids × 2 bytes = **~256 bytes**
+- QJL projection: same as TurboQuant = **16 bytes**
+- Rotation indices: 129 uint8 values per vector (stored at inference, not model parameters)
+- **Total: ~372 parameters**
+
+**Ratio: 16,399 / 372 ≈ 44×**
+
+At scale, this gap becomes dramatic:
+
+| Dimension | TurboQuant | RotorQuant | Ratio |
+|-----------|-----------|-----------|-------|
+| d=128 | 16,384 params | ~372 | **44×** |
+| d=256 | 65,536 params | ~688 | **95×** |
+| d=4096 | ~16.7M params | ~11K | **~1,500×** |
+
+For large models with d=4096 attention heads, TurboQuant would need to store **16.7 million parameters per layer** just for rotation matrices — a significant overhead. RotorQuant needs ~11K parameters. The difference compounds across 36 or 80 layers.
+
+---
+
+## The 10–19× Speedup: What It Actually Means
+
+The headline number — 10 to 19× faster — requires careful reading. This speedup applies to the **rotation kernel specifically**, not end-to-end token generation throughput. As [u/papertrailml](https://www.reddit.com/r/LocalLLaMA/comments/1s44p77/) noted in the thread:
+
+> *"The 10-19x is for the rotation kernel specifically, not end-to-end TPS. KV cache quantization's main win is memory bandwidth reduction, which lets you fit larger contexts or batch sizes, not raw decode speed."*
+
+With that caveat, the kernel speedup is real, reproducible, and has a clear mechanical explanation.
+
+### CUDA Fused Kernel Results (RTX PRO 4000 Blackwell)
+
+| n_vectors | TurboQuant | RotorQuant CUDA | RotorQuant PyTorch | Speedup vs TQ |
+|-----------|-----------|-----------------|-------------------|---------------|
+| 1,024 | 69 μs | **6 μs** | 3.30 ms | **11×** |
+| 4,096 | 132 μs | **12 μs** | 3.86 ms | **11×** |
+| 8,192 | 285 μs | **20 μs** | 4.70 ms | **14×** |
+| 16,384 | 740 μs | **39 μs** | 6.71 ms | **19×** |
+
+### Metal Shader Results (Mac Mini M4)
+
+| n_vectors | TurboQuant (MPS) | RotorQuant Metal | Speedup vs TQ |
+|-----------|-----------------|-----------------|---------------|
+| 1,024 | 764 μs | 471 μs | **1.6×** |
+| 4,096 | 6.02 ms | 650 μs | **9.3×** |
+| 16,384 | 21.94 ms | 1.12 ms | **19.6×** |
+| 65,536 | 86.46 ms | 2.76 ms | **31.3×** |
+
+The Metal speedup grows more dramatically with batch size — at 65K vectors it reaches 31×. This happens because the Metal shader's kernel launch overhead gets amortized over more vectors while the per-vector compute advantage (160× fewer FMAs) compounds.
+
+### Why the Fused Kernel Wins
+
+The naive PyTorch implementation of RotorQuant is actually *slower* than TurboQuant (3.3 ms vs 69 μs for 1,024 vectors). Python/PyTorch launches hundreds of tiny CUDA kernels — one for each multivector operation — with memory round-trips between each. The profiling data shows where time went before the fused kernel:
+
+| Operation | % of Runtime |
+|-----------|-------------|
+| Rotor forward | 41% |
+| Rotor inverse | 39% |
+| Lloyd-Max | 16% |
+| Embed | 4% |
+
+The fused CUDA kernel eliminates every one of these bottlenecks by:
+1. **Staying in registers**: A 128-dimensional vector splits into 43 groups of 3. Each CUDA thread handles exactly one (batch_element, group) pair. The 3 input floats, 4 rotor parameters, 8 multivector components, and quantization centroids all live in registers — never touching global memory.
+2. **No intermediate tensors**: The entire pipeline (embed → sandwich → quantize → inverse → extract) executes in a single kernel launch.
+3. **Coalesced global reads/writes**: Input and output arrays are accessed in stride-1 patterns for maximum memory bandwidth.
+
+The Triton kernel implementation (available via `pip install triton`) achieves 128–652× speedup over the PyTorch baseline and is portable across NVIDIA GPU generations without C++ compilation.
+
+---
+
+## Comparison: RotorQuant vs. TurboQuant vs. Traditional Methods
+
+Here's the full landscape of KV cache quantization approaches as of March 2026:
+
+| Method | Type | Params (d=128) | Compression (3-bit) | Attention Fidelity | Speed |
+|--------|------|---------------|--------------------|--------------------|-------|
+| FP16 (baseline) | None | 0 | 1× | 1.000 | Baseline |
+| KIVI | Block quant | ~16 | ~4× | ~0.98 | Fast |
+| QJL | JL sketch | 128 bits | 5× | 0.990 | Fast |
+| PolarQuant (AISTATS 2026) | Polar coords | ~256 | 4.5× | ~0.99 | Fast |
+| **TurboQuant (ICLR 2026)** | **Haar rotation** | **16,399** | **5× (3-bit)** | **0.991** | **Moderate** |
+| **RotorQuant** | **Clifford rotors** | **372** | **5× (3-bit)** | **0.990** | **Fast (CUDA/Metal)** |
+
+The key differentiators:
+- **RotorQuant vs. TurboQuant**: Same compression ratio and nearly identical attention fidelity; RotorQuant wins on speed (10–19×), parameter count (44×), and memory overhead. TurboQuant wins on theoretical optimality for worst-case synthetic inputs.
+- **RotorQuant vs. KIVI**: RotorQuant achieves better fidelity at the same bit-width through rotation-based decorrelation. KIVI is simpler to implement.
+- **RotorQuant vs. PolarQuant**: Both eliminate dense rotation overhead; PolarQuant uses polar coordinates, RotorQuant uses geometric algebra. Different tradeoffs in numerical stability and grade structure.
+
+### Perplexity Results (Wikitext-2, Post-Prefill Quantization)
+
+From the full parity benchmark on the scrya-com/rotorquant repo:
+
+| Model | KV Heads | FP16 PPL | RQ 4-bit | Delta | RQ 3-bit | Delta |
+|-------|----------|---------|----------|-------|---------|-------|
+| **Mistral-7B** | 8 | 4.80 | **5.16** | **+7.4%** | 5.53 | +15.3% |
+| **Gemma-2-2b** | 4 | 8.87 | **9.77** | **+10.1%** | 10.64 | +19.9% |
+| Qwen2.5-3B | 2 | 9.81 | **10.13** | **+3.2%** | 12.28 | +25.2% |
+
+The Qwen2.5-3B 3-bit result (+25.2%) looks alarming until you notice it has only 2 KV heads — extreme group-query attention makes each KV vector serve many queries, amplifying any quantization error. With more KV heads (Mistral-7B, 8 heads), 4-bit RotorQuant achieves only +7.4% perplexity delta, which is competitive with the best rotation-based quantizers.
+
+---
+
+## Code Deep-Dive: The Clifford Implementation
+
+The `clifford.py` module is the mathematical heart of RotorQuant. It implements Cl(3,0) from first principles in PyTorch. Let's walk through the key functions.
+
+### The Geometric Product
+
+```python
+# Cl(3,0) basis: [1, e1, e2, e3, e12, e13, e23, e123]
+S, E1, E2, E3, E12, E13, E23, E123 = range(8)
+
+def geometric_product(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Full Cl(3,0) geometric product: a * b"""
+    a0, a1, a2, a3, a12, a13, a23, a123 = a.unbind(dim=-1)
+    b0, b1, b2, b3, b12, b13, b23, b123 = b.unbind(dim=-1)
+
+    # Grade 0 (scalar)
+    r0 = (a0*b0 + a1*b1 + a2*b2 + a3*b3
+           - a12*b12 - a13*b13 - a23*b23 - a123*b123)
+
+    # Grade 1 (vectors)
+    r1 = (a0*b1 + a1*b0 - a2*b12 + a12*b2 - a3*b13 + a13*b3
+           + a23*b123 + a123*b23)
+    # ... (e2, e3 omitted for brevity)
+
+    # Grade 2 (bivectors)
+    r12 = (a0*b12 + a12*b0 + a1*b2 - a2*b1 + a13*b23 - a23*b13
+            + a3*b123 - a123*b3)
+    # ... (e13, e23 omitted for brevity)
+
+    return torch.stack([r0, r1, r2, r3, r12, r13, r23, r123], dim=-1)
+```
+
+This is the full multiplication table for Cl(3,0) — 64 terms reduced by the algebraic rules. The grade-0 term looks like a dot product; the grade-2 terms look like a cross product wrapped in algebra.
+
+### Rotor Construction
+
+```python
+def make_rotor(bivector: torch.Tensor, angle: torch.Tensor) -> torch.Tensor:
+    """R = cos(θ/2) + sin(θ/2) · B̂"""
+    bv_norm = bivector.norm(dim=-1, keepdim=True).clamp(min=1e-8)
+    bv_hat = bivector / bv_norm  # normalize the bivector direction
+
+    half_angle = angle.unsqueeze(-1) / 2
+    cos_ha = torch.cos(half_angle)
+    sin_ha = torch.sin(half_angle)
+
+    rotor = torch.zeros(*bivector.shape[:-1], 8, ...)
+    rotor[..., S]   = cos_ha.squeeze(-1)       # scalar part
+    rotor[..., E12] = sin_ha.squeeze(-1) * bv_hat[..., 0]  # e12 bivector
+    rotor[..., E13] = sin_ha.squeeze(-1) * bv_hat[..., 1]  # e13 bivector
+    rotor[..., E23] = sin_ha.squeeze(-1) * bv_hat[..., 2]  # e23 bivector
+    return rotor
+```
+
+Notice: a rotor has exactly 4 non-zero components out of 8 possible. The grade-1 (e₁, e₂, e₃) and grade-3 (e₁₂₃) parts are zero. This is why the geometric product can be computed with only 28 FMAs instead of 64.
+
+### The Sandwich Product
+
+```python
+def rotor_sandwich(rotor: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """Apply rotor sandwich product: R x R̃"""
+    rotor_rev = reverse(rotor)  # flip sign of grade-2 and grade-3 parts
+    return geometric_product(geometric_product(rotor, x), rotor_rev)
+```
+
+The `reverse` operation negates bivector and pseudoscalar components (grades 2 and 3), leaving grades 0 and 1 unchanged. This is the Clifford algebra analogue of quaternion conjugation.
+
+### The CUDA Sparse Geometric Product
+
+The paper shows the explicitly optimized CUDA code for the rotor-times-multivector product (exploiting the rotor's 4-component sparsity):
+
+```c
+// Sparse GP: rotor (s, p12, p13, p23) * multivector (28 FMAs vs 64 for full)
+r[0] = s*x[0] - p12*x[4] - p13*x[5] - p23*x[6];
+r[1] = s*x[1] + p12*x[2] + p13*x[3] + p23*x[7];
+r[2] = s*x[2] - p12*x[1] + p23*x[3] - p13*x[7];
+r[3] = s*x[3] - p13*x[1] - p23*x[2] + p12*x[7];
+r[4] = s*x[4] + p12*x[0];
+r[5] = s*x[5] + p13*x[0];
+r[6] = s*x[6] + p23*x[0];
+r[7] = s*x[7] - p23*x[1] + p13*x[2] - p12*x[3];
+```
+
+Since the input vector `x` always has zero grade-0 and zero grade-2 and grade-3 components (it's a pure grade-1 multivector), many of these terms vanish at runtime, further reducing the effective FMA count. The CUDA compiler can statically eliminate these branches.
+
+### Triton Kernels: Portable 100–650× Speedup
+
+For users without C++ compilation toolchains, the project provides Triton kernels:
+
+```python
+from turboquant import RotorQuantMSE, pack_rotors_for_triton, triton_rotor_full_fused
+
+rq = RotorQuantMSE(d=128, bits=3, device="cuda")
+packed_rotors = pack_rotors_for_triton(rq.rotors)
+c_v = rq.centroids_vector
+
+# Full quantize-dequantize pipeline: 128-652× faster than PyTorch baseline
+x_hat = triton_rotor_full_fused(x, packed_rotors, None, c_v, None, c_v)
+```
+
+Triton kernels auto-tune to the target GPU at first run and avoid C++ compilation — making RotorQuant accessible on any CUDA-capable hardware.
+
+### Post-Prefill Quantization: Fixing Error Compounding
+
+One subtle engineering decision in the implementation: RotorQuant uses *post-prefill* quantization. During the prefill pass (processing the input prompt), keys and values run at full FP16 precision. Only after the prefill completes does the system bulk-quantize the entire KV cache via Triton. Each subsequent decode step quantizes the new key but returns the current token's value at full precision before quantizing it for future use.
+
+This design choice prevents error from compounding across layers during prefill — a critical correctness property that the naive approach of quantizing on-the-fly during prefill would violate.
+
+**High-context generation results (RotorQuant 3-bit on RTX 5090):**
+
+| Context | Speed | VRAM | Needle-in-Haystack |
+|---------|-------|------|--------------------|
+| 2K | 6.9 tok/s | 2.4 GB | ✅ FOUND |
+| 8K | 8.6 tok/s | 3.1 GB | ✅ FOUND |
+| 16K | 6.0 tok/s | 4.0 GB | ✅ FOUND |
+| 32K | 5.0 tok/s | 5.9 GB | ✅ FOUND |
+| 65K | 2.1 tok/s | 9.6 GB | ✅ FOUND |
+
+---
+
+## The Broader Context: Geometric Algebra Is Having a Moment in ML
+
+RotorQuant didn't emerge in a vacuum. A broader movement is applying geometric algebra to machine learning problems where the standard linear algebra toolbox is computationally or representationally inadequate.
+
+### CliffordNet (arXiv:2601.06793, Jan 2026)
+
+From Zhongping Ji, submitted to arXiv just two months before RotorQuant, CliffordNet proposes a **vision backbone built entirely on geometric algebra**. Instead of separate spatial mixers (attention/convolution) and channel mixers (FFN), CliffordNet derives a single unified interaction mechanism from the Clifford geometric product `uv = u·v + u∧v`.
+
+The result: their Nano variant (1.4M parameters) achieves 77.82% on CIFAR-100 — matching ResNet-18 (11.2M parameters) with **8× fewer parameters**. The paper argues that "global understanding can emerge solely from rigorous, algebraically complete local interactions" — a claim that resonates with RotorQuant's finding that local 3D rotations suffice for real KV cache vectors.
+
+### CARE: Clifford Algebraic Rotor Embeddings (arXiv:2511.11665, Nov 2025)
+
+This paper from Sriram, Paliwal, Ecker, and van de Geijn asks whether positional embeddings (RoPE) can be generalized to higher dimensions using Clifford rotors. They show that:
+- Standard RoPE = rotors in Cl(1,0) (complex number rotations in 2D)
+- Quaternion RoPE (QuatRo) = rotors in Cl(3,0) (quaternion rotations in 3D)
+- **CARE** = rotors in arbitrary Cl(n,0) (Clifford rotations in n-dimensional space)
+
+This isn't the same problem as RotorQuant, but it's the same mathematical object appearing in a different ML context. The same Cl(3,0) algebra that RotorQuant uses for KV cache rotation is being explored for positional encoding generalization.
+
+### Geometric Clifford Algebra Networks (ICML 2023)
+
+Ruhe et al.'s GCAM paper (PMLR 2023) proposed using Pin(p,q,r) group transformations for modeling physical dynamical systems, showing that symmetry-preserving geometric algebra operations outperform standard neural networks on physics simulation tasks. This is an older precedent for geometric algebra in deep learning.
+
+The pattern is clear: geometric algebra is being pulled in from physics and graphics programming into ML because it offers **representations that are simultaneously more compact and more geometrically meaningful** than equivalent matrix formulations.
+
+---
+
+## Community Reactions: Skepticism and Excitement
+
+The Reddit thread (486 points, 98% upvoted, 97 comments as of March 26, 2026) is worth reading in full. The response captures the dynamic of a genuinely interesting result arriving faster than it can be properly peer-reviewed.
+
+**The skeptical framing** from [u/Juan_Valadez](https://www.reddit.com/r/LocalLLaMA/comments/1s44p77/) is technically correct:
+
+> *"Not theoretically equivalent to TurboQuant — but potentially a very useful practical approximation."*
+
+This is probably the most important characterization. RotorQuant does not achieve what TurboQuant achieves in theory (near-optimal Beta distribution induction across all dimensions). It achieves something weaker (local Beta-like distributions within 3D blocks) that happens to work empirically on real KV cache data.
+
+**The excited framing** from [u/Dany0](https://www.reddit.com/r/LocalLLaMA/comments/1s44p77/) makes the connection explicit:
+
+> *"I think I get it, it's like using quaternions instead of Euler angles. It works because most of the mult is 0s."*
+
+This is exactly right. Euler angles (or dense rotation matrices) work universally but are computationally redundant for most use cases. Quaternions (and Clifford rotors) exploit structure to get the same geometric result with fewer parameters and operations.
+
+**The implementation concern** from [u/Cradawx](https://www.reddit.com/r/LocalLLaMA/comments/1s44p77/) — "Hopefully not another hallucinated vibe-coded post" — is legitimate in the current AI-assisted code era. The OP confirmed using AI (Grok) to generate the CUDA kernel and Metal shader, though the implementation passed the test suite.
+
+**The vLLM signal** ([Issue #38291](https://github.com/vllm-project/vllm/issues/38291)) is the most significant indicator of momentum. The feature request was filed the same day the Reddit post went up, with a detailed technical write-up of the integration path. If RotorQuant lands in vLLM, it becomes accessible to the entire production LLM serving ecosystem.
+
+---
+
+## Implications: Could This Become the New Standard?
+
+Several factors determine whether RotorQuant becomes widely adopted or remains an interesting research artifact:
+
+### Arguments For
+
+**1. The engineering story is correct.** Rotors really are more parameter-efficient than dense matrices for rotation. This isn't a claim that depends on empirical results — it's a mathematical fact. The question is only whether local rotations are *sufficient* in practice.
+
+**2. Real-model results support the approach.** The Qwen2.5-3B validation shows matching or better top-k retrieval accuracy, which is what matters for long-context attention. Perplexity on multi-KV-head models (Mistral-7B, Gemma-2-2b) at 4-bit is competitive.
+
+**3. The implementation ecosystem is building.** The vLLM issue, the Triton kernels, the pip-installable package, and the Metal shader for Apple Silicon all lower the barrier to adoption significantly.
+
+**4. Edge deployment is a natural fit.** The 44× parameter reduction matters most for constrained environments — mobile, edge, Apple Silicon — where storing a 16K-parameter rotation matrix per attention head is a real cost.
+
+**5. Geometric algebra momentum.** CliffordNet, CARE, GCAM, and now RotorQuant suggest that the ML community is actively rediscovering the value of geometric algebra. As more researchers become fluent in these tools, applications will proliferate.
+
+### Arguments Against
+
+**1. The theoretical optimality gap is real.** TurboQuant's global Haar rotation provably achieves a near-optimal Beta distribution. RotorQuant's local rotations don't have this guarantee. For adversarial inputs or models with pathological attention patterns, TurboQuant would be more robust.
+
+**2. 3-bit perplexity on GQA models degrades.** The +25% perplexity delta on Qwen2.5-3B (2 KV heads) at 3-bit is concerning for future models that push GQA to extremes. As model architectures move toward fewer KV heads for efficiency, this limitation becomes more important.
+
+**3. Peer review is pending.** The technical report exists but has not been peer-reviewed. The CUDA kernel and Metal shader were AI-generated. The 96 unit tests (listed in the repo) cover correctness but don't fully validate the theoretical properties claimed.
+
+**4. A true drop-in requires framework integration.** Even with the Triton kernels, integrating RotorQuant into llama.cpp, vLLM, HuggingFace Transformers, or GGUF requires significant engineering. These integrations haven't happened yet.
+
+### The Most Likely Outcome
+
+RotorQuant is probably most valuable as an **inspiration** rather than a direct replacement. Its demonstration that local 3D rotations can substitute for global d×d rotations in practice opens a design space that wasn't previously explored. Future work might:
+
+- Use learned (rather than random) Clifford rotors, calibrated to each model
+- Combine global rotation (for distribution shaping) with local rotor refinement (for fast inference)
+- Apply the same block-diagonal-rotor idea to other quantization-dependent rotations in weight quantization schemes like QuIP and QuaRot
+- Explore higher-dimensional Clifford algebras (Cl(4,0), Cl(8,0)) that might enable larger group sizes with still-manageable parameter counts
+
+---
+
+## Conclusion
+
+RotorQuant is a genuinely creative piece of work that does several things simultaneously: it finds a tight connection between a mathematical concept from physics (Clifford rotors) and a practical engineering problem (KV cache rotation), exploits that connection to get a 44× parameter reduction, and then delivers on the speedup with a fused CUDA kernel and Metal shader that keep the entire pipeline in registers.
+
+The mathematics is beautiful. The Cl(3,0) geometric product table encodes every possible rotation in 3D space in 28 floating-point operations. Quaternions — the tool that's been making 3D games fast since the 1990s — turn out to be exactly the right object for rotating blocks of attention vectors. The only reason nobody did this before is that KV cache quantization via rotation is itself only a few years old.
+
+The caveats are real. Local rotations don't achieve global coordinate mixing. The theoretical optimality guarantees of TurboQuant don't transfer. The implementation includes AI-generated GPU kernels that need battle-testing in production. The empirical results are promising but limited in scope.
+
+But the core observation — that rotor sandwich products can replace dense matrix multiplies in the rotation step of quantization schemes, with massive parameter savings and comparable empirical quality — is solid enough to build on. Whether RotorQuant itself becomes production-ready or serves as the foundation for something better, geometric algebra has now demonstrated it has a role in the future of LLM inference optimization.
+
+Geometric algebra: not just for graphics programmers anymore.
+
+---
+
+## References
+
+1. **RotorQuant Technical Report** — John D. Pope (March 2026)  
+   [https://www.scrya.com/rotorquant/](https://www.scrya.com/rotorquant/)  
+   Code: [https://github.com/scrya-com/rotorquant](https://github.com/scrya-com/rotorquant)
+
+2. **TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate** — Zandieh et al., ICLR 2026  
+   [arXiv:2504.19874](https://arxiv.org/abs/2504.19874)  
+   Google Blog: [research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/)
+
+3. **QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead** — Zandieh, Daliri, Han (2024)  
+   [arXiv:2406.03482](https://arxiv.org/abs/2406.03482)
+
+4. **CliffordNet: All You Need is Geometric Algebra** — Zhongping Ji (Jan 2026)  
+   [arXiv:2601.06793](https://arxiv.org/abs/2601.06793)
+
+5. **Clifford Algebraic Rotor Embeddings: Maybe embeddings should start to CARE** — Sriram, Paliwal, Ecker, van de Geijn (Nov 2025)  
+   [arXiv:2511.11665](https://arxiv.org/abs/2511.11665)
+
+6. **PolarQuant: Leveraging Polar Transformation for Efficient Key Cache Quantization** — AISTATS 2026  
+   [arXiv:2502.00527](https://arxiv.org/abs/2502.00527)
+
+7. **Geometric Clifford Algebra Networks** — Ruhe et al., ICML 2023  
+   [proceedings.mlr.press/v202/ruhe23a.html](https://proceedings.mlr.press/v202/ruhe23a.html)
+
+8. **Reddit thread: RotorQuant: 10-19x faster alternative to TurboQuant via Clifford rotors (44x fewer params)**  
+   [r/LocalLLaMA, March 26, 2026](https://reddit.com/r/LocalLLaMA/comments/1s44p77/)
+
+9. **vLLM Feature Request: Add RotorQuant support** — Issue #38291  
+   [github.com/vllm-project/vllm/issues/38291](https://github.com/vllm-project/vllm/issues/38291)
+
+10. **TurboQuant PyTorch Implementation** (with RotorQuant PR)  
+    [github.com/tonbistudio/turboquant-pytorch](https://github.com/tonbistudio/turboquant-pytorch)

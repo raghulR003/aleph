@@ -1,0 +1,529 @@
+---
+title: "The Free Lunch in LLM Inference: 7 Experiments on Qwen3.5 Quantization"
+description: "A forensic reconstruction of u/gaztrab's 7 community-requested experiments on RTX 5080 16GB — from the 'free lunch' of KV q8_0 to the Unsloth MXFP4 investigation, with the actual numbers and honest tradeoffs."
+pubDate: 2026-03-29
+coverImage: "https://images.unsplash.com/photo-1639322537228-f710d846310a?w=1200&h=600&fit=crop"
+coverAlt: "Abstract visualization of data flow and quantization levels"
+author: "default"
+tags: ["qwen3.5", "quantization", "moe", "rtx-5080", "llama.cpp", "benchmarks"]
+draft: false
+series: "LocalLLaMA Gold"
+seriesOrder: 5
+---
+
+*Posted February 2026 • 8,200 words • Technical Deep-Dive*
+
+---
+
+## 1. Introduction: Why These Experiments Matter
+
+On February 27, 2026, a post appeared on r/LocalLLaMA that quietly became one of the most scientifically rigorous community contributions of the month. Titled *"Follow-up: Qwen3.5-35B-A3B — 7 community-requested experiments on RTX 5080 16GB,"* it was authored by u/gaztrab — a software engineer who had been publicly optimizing a home inference server for several weeks, accumulating 6 documented "sessions" of trial-and-error benchmarks in a GitHub repository.
+
+The post earned 583 points, a 99% upvote ratio, and 192 comments. Daniel Hanchen, Unsloth's co-founder, responded personally. The community found a configuration bug in Unsloth's newest GGUF format mid-thread. A second researcher built on the data to argue for a lower quantization scheme that hit 72% faster speeds. This was not ordinary benchmark posting. It was a live experiment with peer review happening in real time.
+
+The headline result was deceptively simple: **KV cache q8_0 is a free lunch.** Quantizing the key-value attention cache from 16-bit to 8-bit costs essentially nothing in output quality — less than 0.4% perplexity change — while improving throughput by 12–38%. Every token-per-second you care about, unlocked for free.
+
+But that headline is only one of seven experiments. The full picture is more interesting, more nuanced, and more practically useful than any single finding. This post reconstructs all seven experiments from primary sources: gaztrab's GitHub repository, both original Reddit threads, and the wider community discussion that followed. The goal is to give you not just the numbers, but the reasoning — the scientific method, warts and all, running in public.
+
+---
+
+## 2. The Hardware: RTX 5080 16GB — The Sweet Spot?
+
+The RTX 5080 occupies a peculiar position in the consumer GPU market as of early 2026.
+
+At the top of the Blackwell line sits the RTX 5090 with 32GB GDDR7. At the bottom of the 16GB tier sits the RTX 5060 Ti. The 5080 threads the needle: 16GB GDDR7 memory on a 256-bit memory bus, delivering **960 GB/s** of memory bandwidth. For reference, the RTX 4090 delivers ~1008 GB/s from a 384-bit bus, but with GDDR6X rather than GDDR7. The 5080 trades bus width for the faster memory standard and arrives at almost the same bandwidth figure — in a card that fits within reasonable power and cost envelopes for a home workstation.
+
+The full specification set that matters for LLM inference:
+
+| Component | Spec |
+|-----------|------|
+| GPU | NVIDIA GeForce RTX 5080 16GB GDDR7 |
+| Architecture | Blackwell (sm_120) |
+| Memory bandwidth | 960 GB/s |
+| GPU boost clock | 2617 MHz |
+| CUDA version | 13.1 (driver 590.48.01) |
+| CPU | AMD Ryzen 9 9950X (32-thread) |
+| System RAM | 128 GB DDR5-4800 |
+| PCIe | PCIe 5.0 x16 |
+
+The PCIe 5.0 connection matters because MoE inference, as we will see, involves transferring expert weights between CPU RAM and GPU VRAM across that bus. PCIe 5.0 provides approximately 63 GB/s of bidirectional bandwidth — roughly double PCIe 4.0. For models where expert offloading is the bottleneck, this makes a measurable difference.
+
+**Why 16GB is the interesting VRAM tier:** The Qwen3.5-35B-A3B Q4_K_M quantization file weighs in at approximately 20 GB. This means it does not fit in 16GB VRAM — but it fits *close enough* that a large fraction of the model can be GPU-resident, with only the excess spilling to CPU RAM. The 16GB tier therefore occupies a uniquely revealing experimental position: it forces all the hard tradeoffs around MoE expert splitting into view, while still being fast enough to be useful. A 24GB GPU (like an RTX 4090 or RTX 5090) would simply fit the whole model and make most of these questions moot. A 12GB GPU (like an RTX 4080) would offload so much to CPU that the bottleneck would shift entirely to RAM bandwidth.
+
+**The Blackwell sm_120 caveat:** Building llama.cpp from source with CUDA 12.8+ and `-DCMAKE_CUDA_ARCHITECTURES=120` is required to get native Blackwell kernels. The pre-built GitHub release binaries target CUDA 12.4, which lacks sm_120 support — resulting in JIT-compiled PTX code from an Ada architecture (sm_89). The practical effect: the first run is noticeably slower during kernel compilation, and you miss Blackwell-specific cuBLAS optimizations. Gaztrab's Docker build specifies CUDA 12.8.1 with native Blackwell targets, and all benchmarks in this post were run with those native binaries.
+
+---
+
+## 3. The Model: Qwen3.5-35B-A3B Architecture Explained
+
+The name requires decoding. "35B" is total parameters. "A3B" means 3 billion *active* parameters per forward pass. This is a sparse **Mixture-of-Experts** (MoE) architecture, and the naming convention is what distinguishes MoE models from dense ones in the Qwen3.5 family.
+
+Qwen3.5-35B-A3B was released by Alibaba's Qwen team on February 16, 2026, as part of the Qwen3.5 Medium Series. The full lineup includes the 27B dense model, 35B-A3B MoE, 122B-A10B MoE, and the flagship 397B-A17B MoE. All are released under Apache 2.0.
+
+### The MoE Mechanism
+
+In a standard (dense) transformer, every feedforward layer fires every weight on every token. If you have a 27B-parameter model, all 27 billion parameters participate in processing each token.
+
+MoE changes this. The feedforward network is replaced by a "mixture" of independent sub-networks, called **experts**. A lightweight **router** network evaluates each incoming token and selects which few experts to activate. All other experts sit dormant — loaded in memory but not computing anything.
+
+For Qwen3.5-35B-A3B, the specific configuration from the official model card is:
+
+| Parameter | Value |
+|-----------|-------|
+| Total parameters | 35B |
+| Active parameters per token | ~3B |
+| Number of experts | 256 |
+| Routed experts per token | 8 |
+| Shared (always-active) expert | 1 |
+| Expert intermediate dimension | 512 |
+| Number of layers | 40 |
+| Hidden dimension | 2048 |
+| Context length | 262,144 natively |
+
+The **hidden layout** is the architectural detail that makes this model unusual: `10 × (3 × (Gated DeltaNet → MoE) → 1 × (Gated Attention → MoE))`. This reflects the hybrid architecture Alibaba calls the **Gated Delta Network** — linear attention layers that handle long-context efficiency, interleaved with traditional attention layers (using Grouped Query Attention with 16 Q heads and just 2 KV heads). Every attention block is followed by an MoE feedforward block.
+
+The "9 active experts" figure that appears in community discussions (the Medium article by u/mustafa.gencc94 describes it as "8 routed + 1 permanent shared expert per block") is consistent with the official card's specification. Each token triggers computation in 8 of 256 routed experts plus 1 always-on shared expert, for 9 total active expert calls per MoE layer.
+
+### Why This Architecture Creates a Unique Inference Challenge
+
+The result is a model with **frontier-class breadth** (35B total parameters covering an enormous range of knowledge and reasoning patterns) at **small-model compute cost** (only ~3B active per token). This is the architectural sleight of hand that lets it outperform Qwen3-235B-A22B — the model that was Alibaba's flagship six months earlier — on many benchmarks despite being much smaller.
+
+But it creates a specific inference challenge: **the model weights must live somewhere**, even when most of them are idle. The full Q4_K_M quantization is ~20 GB. On a 16GB GPU, that means roughly 4–6 GB of expert weights must live in CPU RAM and transfer across PCIe for each token's expert computation. The rest stay on GPU. The optimization problem is: which experts go where, and how do you manage that split dynamically?
+
+This is the central engineering problem that gaztrab's experiments address.
+
+---
+
+## 4. The GGUF Quantization Landscape: What the Names Mean
+
+Before the experiments, a brief glossary of the quantization formats being compared.
+
+**GGUF** (GPT-Generated Unified Format) is the binary format used by llama.cpp for model weights. Unlike safetensors or PyTorch `.pt` files, GGUF files can contain pre-quantized weights at various bit widths, optimized for CPU/GPU hybrid inference.
+
+The naming convention works like this:
+
+- **Q8_0**: 8-bit quantization, uniform (0 = symmetric). Each weight stored as an 8-bit integer. High quality, roughly half the size of BF16.
+- **Q4_K_M**: 4-bit quantization, using K-quantization (block-based with scale factors), **M**edium variant. The "K" scheme stores blocks of 32 weights with a shared scale factor. Medium means certain sensitive tensors (attention, norms) are automatically kept at Q5_K or Q6_K. Typically ~20 GB for this model.
+- **Q4_K_L**: Same as Q4_K_M but the **L**arge variant — more tensors upgraded to Q5_K/Q6_K. Slightly larger file, slightly better quality.
+- **Q4_K_L (bartowski)**: Bartowski is a community quantizer who publishes GGUF files with a reputation for careful calibration and transparent methodology. His Q4_K_L is the "safe" community recommendation.
+- **UD-Q4_K_XL**: Unsloth Dynamic quantization, Extra Large variant. Uses Unsloth's calibration dataset to determine *per-tensor* bit widths — theoretically allocating more bits to sensitive tensors and fewer to robust ones. **XL** means more aggressive: more layers at Q6_K, but in the version tested in these experiments, also unexpectedly high fractions of **MXFP4** (microscaling floating point 4-bit).
+- **MXFP4_MOE**: A specialized Unsloth quant using Microscaling FP4, a hardware-accelerated 4-bit format native to NVIDIA Blackwell GPUs. Uses FP4 for expert weights, Q8_0 for attention and embedding layers.
+
+The **KV cache** is separate from the model weights. It stores the key and value tensors that accumulate as the model processes tokens — the "memory" of the conversation. By default, these are stored in the same precision as model inference (typically BF16). The `-ctk q8_0 -ctv q8_0` flags quantize both K and V cache tensors to 8-bit, reducing KV cache VRAM by ~2x.
+
+A crucial dependency: KV cache quantization **requires flash attention** (`-fa on`). Without flash attention, llama.cpp cannot process quantized KV tensors efficiently.
+
+---
+
+## 5. The Scientific Method: How the Experiments Were Designed
+
+Gaztrab's approach is unusual for community benchmarking in that it is explicitly reproducible. Every configuration is committed as an `.env` file in the GitHub repository at `github.com/gaztrabisme/llm-server`. Every result is saved as a JSON file under `benchmarks/`. The `scripts/run-experiment.sh` script accepts an experiment identifier (`e1`, `e2`, etc.) and runs the full evaluation sequence.
+
+Two quality metrics were used:
+
+**Perplexity (PPL)**: Measured on the WikiText-2 test set using `llama-perplexity`. Perplexity captures how "surprised" the model is by the test text — a lower PPL means the model assigns higher probability to the true tokens. The Q8_0 quantization is used as the reference (since full BF16 was not available for comparison at 16GB VRAM). A note from the community (u/noneabove1182) flags that WikiText-2 may appear in some quantizers' imatrix calibration datasets, potentially giving a slight PPL advantage to those specific quants. This is acknowledged as a methodological caveat.
+
+**KL Divergence (KLD)**: The more rigorous metric. `llama-perplexity` can compute KL divergence between a reference model's output distribution and the quantized model's output distribution on the same tokens. Rather than measuring whether the model picks the right *next* token, KLD measures whether the model's *entire probability distribution* over the vocabulary matches the reference. A KLD of 0.0 is perfect agreement; values above ~0.1 indicate perceptible behavioral divergence.
+
+The research rationale for preferring KLD is spelled out in a Hugging Face blog post that appeared in the thread: the paper *"Accuracy is Not All You Need"* demonstrates that benchmark accuracy scores can remain stable while a model's internal reasoning has changed significantly — what the authors call "flips." A model can get the same score on MMLU by getting five previously-correct questions wrong while getting five previously-wrong questions right by chance. KLD is the metric that catches this behavioral drift. As the Unsloth documentation states explicitly: "KL Divergence should be the gold standard for reporting quantization errors... Using perplexity is incorrect since output token values can cancel out."
+
+The benchmark tool used for speed measurement is `llama-bench`, which runs multiple trials per configuration and reports the mean with variance. Four workloads were tested: PP-512 (prompt processing, 512 tokens), TG-512 (token generation, 512 tokens), and mixed variants. All results below are TG-512 (text generation) unless otherwise noted, as this is the latency metric most relevant to interactive use.
+
+**Context for the 512-token limitation:** Several community members (u/Digger412, u/simracerman) raised an important methodological concern: all KV cache quality tests used a 512-token context window. This is appropriate for measuring per-token quality at moderate contexts, but may significantly underestimate quality degradation at 40K–100K tokens, where KV cache quantization errors may accumulate across the attention span. This limitation is acknowledged throughout and represents a natural scope for follow-up experiments.
+
+---
+
+## 6. Experiment 1: KV Cache q8_0 vs q4_0 — The "Free Lunch"
+
+**Community request:** Does KV cache quantization actually affect quality, or is it really "free"? Test PPL at q8_0 and q4_0 across multiple model quantizations.
+
+**Setup:** Six configurations tested — three model quantization levels (Q4_K_M, Q8_0, UD-Q4_K_XL) × two KV cache settings (f16, q8_0). Additional q4_0 test on Q4_K_M.
+
+**Results:**
+
+| Config | PPL | Δ vs f16 KV |
+|--------|-----|-------------|
+| Q4_K_M + KV f16 | 6.6700 | baseline |
+| Q4_K_M + KV q8_0 | 6.6688 | −0.018% |
+| Q4_K_M + KV q4_0 | 6.6773 | +0.110% |
+| Q8_0 + KV f16 | 6.5342 | baseline |
+| Q8_0 + KV q8_0 | 6.5335 | −0.011% |
+| UD-Q4_K_XL + KV f16 | 7.1702 | baseline |
+| UD-Q4_K_XL + KV q8_0 | 7.1698 | −0.006% |
+
+The PPL differences are sub-0.4% across all configurations. KV q8_0 versus f16 is indistinguishable. KV q4_0 shows a barely-measurable 0.11% PPL increase — still well within the noise of practical use.
+
+**The throughput side of the equation:**
+
+| KV Config | tok/s | VRAM saved |
+|-----------|-------|------------|
+| KV f16 | 55–60 | baseline |
+| KV q8_0 | 67–74 | ~1.5 GB |
+| KV q4_0 | 62–68 | ~3.0 GB |
+
+KV q8_0 frees approximately 1.5 GB of VRAM compared to f16. On a 16GB card where the model barely fits, this matters: that 1.5 GB can host additional expert layers on GPU instead of CPU, which directly translates to faster expert computation and fewer PCIe transfers per token. The throughput improvement of **+12–38%** is not from making attention math faster — it is from the cascading effect of freed VRAM enabling better expert placement.
+
+**Verdict:** KV q8_0 is empirically free at 512-token contexts. The qualifier from u/Front_Eagle739 is important: at very long contexts (40K–100K tokens), quantization errors may accumulate in ways that this experiment does not capture. Use `-ctk q8_0 -ctv q8_0` for everyday coding and Q&A use cases. For multi-hundred-kilotoken document processing, more caution may be warranted pending further testing.
+
+**Community insight from u/a_beautiful_rhind:** K and V tensors have different sensitivity profiles — the K cache is generally more sensitive to quantization than V. Libraries like `ik_llama.cpp` expose Hadamard transform rotation for K tensors, which can allow lower bit widths for K without quality loss. Asymmetric K/V quantization (q8_0 for K, q4_0 for V) is a future avenue not tested in this round.
+
+---
+
+## 7. Experiment 2: UD-Q4_K_XL vs Q4_K_M — The Unsloth Investigation
+
+**Community request:** Gaztrab's original post had flagged that UD-Q4_K_XL performed worse than Q4_K_M on PPL. The community wanted confirmation and investigation.
+
+**Setup:** Direct PPL and KLD comparison of UD-Q4_K_XL versus Q4_K_M versus Q4_K_L (bartowski). Both speed and quality measured.
+
+**Results:**
+
+| Quant | PPL | vs Q8_0 | Mean KLD | Same Top-1% | File size |
+|-------|-----|---------|----------|-------------|-----------|
+| Q8_0 (reference) | 6.5342 | — | — | — | ~36.9 GB |
+| Q4_K_M | 6.6688 | +2.1% | 0.028 | 92.4% | ~20.3 GB |
+| Q4_K_L (bartowski) | 6.6125 | +1.2% | 0.018 | 94.2% | ~21.4 GB |
+| UD-Q4_K_XL | 7.1702 | +9.7% | 0.109 | 86.2% | ~21.7 GB |
+
+The UD-Q4_K_XL result is striking: **9.7% higher PPL than Q8_0** and **3.9× worse KLD than Q4_K_M**, despite being *larger* than Q4_K_M by 1.4 GB. You are paying more disk space and memory for a noticeably worse model. This is the worst of all worlds.
+
+**The diagnosis (from community thread with Daniel Hanchen):** The culprit was a misconfigured experimental MXFP4 insertion into the UD-Q4_K_XL recipe for MoE models. Examining the tensor manifests (posted by u/bettertoknow) reveals the issue:
+
+```
+# UD-Q4_K_XL tensor breakdown:
+type f32:   301 tensors
+type q8_0:   74 tensors
+type q4_K:    1 tensors   ← almost no Q4_K
+type q5_K:   31 tensors
+type q6_K:   51 tensors
+type mxfp4: 275 tensors   ← 275 tensors in MXFP4!
+
+# For comparison, Q4_K_M:
+type f32:   301 tensors
+type q8_0:   60 tensors
+type q4_K:  165 tensors
+type q5_K:   60 tensors
+type q6_K:   67 tensors
+type mxfp4:  80 tensors   ← only 80 MXFP4 tensors
+```
+
+The UD-Q4_K_XL variant had ended up with *more* MXFP4 tensors than the dedicated MXFP4_MOE quant, because Unsloth's dynamic bit-allocation algorithm had been recently modified to experiment with MXFP4 in the XL tier for MoE models. The algorithm apparently placed MXFP4 in places where it hurts quality significantly.
+
+Daniel Hanchen confirmed the issue and announced the affected quants — **Q2_K_XL, Q3_K_XL, and Q4_K_XL only** — would be immediately replaced with corrected versions. All other Unsloth quants were unaffected. The fix was live within hours of the community reporting. By the time the follow-up post reached its peak engagement, updated GGUFs were already available.
+
+**Speed comparison:**
+
+| Quant | tok/s | Notes |
+|-------|-------|-------|
+| Q4_K_M | 74.7 | Best speed |
+| Q4_K_L | 41.4 | −44.5% — larger file, slower due to more GPU memory pressure |
+| UD-Q4_K_XL | ~45 | Similar to Q4_K_L, worse quality |
+
+Counterintuitively, Q4_K_L is *slower* than Q4_K_M despite being higher quality. The Q4_K_L file is ~1.1 GB larger, which means on a 16GB GPU with tight VRAM, fewer expert layers fit on GPU and more computation must happen on CPU over PCIe. The extra quality comes at a tangible speed cost.
+
+**Verdict:** At the 16GB VRAM tier, **Q4_K_M is the optimal quant** — the best tradeoff of speed, quality, and size. Q4_K_L is a worthwhile upgrade if you have a 24GB GPU where the entire model fits. UD-Q4_K_XL (pre-fix) should not be used for MoE models. The corrected Unsloth Dynamic GGUFs (released post-fix, March 5 2026) restored expected quality.
+
+---
+
+## 8. Experiment 3: MXFP4_MOE — Blackwell's Native Format Disappoints
+
+**Community request:** The RTX 5080 has native MXFP4 (Microscaling Float Point 4) hardware acceleration — a Blackwell-exclusive feature. Does using native MXFP4 weights give a speed advantage?
+
+**Setup:** MXFP4_MOE from Unsloth versus Q4_K_M, same flags, same hardware.
+
+**Results:**
+
+| Config | tok/s | Mean KLD | File size |
+|--------|-------|----------|-----------|
+| Q4_K_M | 74.7 | 0.028 | ~20.3 GB |
+| MXFP4_MOE | 49.5 | 0.050 | ~14.5 GB |
+
+MXFP4_MOE is **34% slower** than Q4_K_M and has **1.8× worse KLD**.
+
+This result surprised the community. On paper, MXFP4 should be a natural fit for Blackwell: native hardware support means no software dequantization overhead, and at 4 bits (with microscaling) the format is aggressive on file size. The MXFP4_MOE file is only ~14.5 GB — which means on a 16GB card, more of the model fits in VRAM without CPU offloading.
+
+The explanation, pieced together from the thread: MXFP4 dequantization on the llama.cpp path for MoE models appears to have a memory leak in the dequant path (gaztrab notes "partial evaluation due to memory leak in MXFP4 dequant path" in his README). Additionally, MXFP4's microscaling scheme may not be as efficient as K-quantization for the specific tensor shapes in Qwen3.5's MoE expert blocks.
+
+**Community counter-evidence:** u/KierkegaardsSisyphus reported 77 tok/s with MXFP4 on their 5080, using a different configuration with `--fit-target 1500` for vision model support. u/R_Duncan on a 4060 laptop saw no slowdown with MXFP4. This suggests the MXFP4 performance gap may be configuration-dependent and hardware-specific, not universal.
+
+**Verdict:** MXFP4_MOE is not ready to replace Q4_K_M as the default quantization for Qwen3.5-35B-A3B on the RTX 5080. The combination of potential dequant path issues and worse KLD makes Q4_K_M the safer choice. MXFP4 hardware acceleration on Blackwell is not yet delivering its theoretical advantage in mainline llama.cpp for MoE models.
+
+---
+
+## 9. Experiment 4: MoE vs Dense — Is the 27B Model Worth Considering?
+
+**Community request:** How does the 35B-A3B MoE compare to the 27B dense model at the same quantization level?
+
+**Setup:** Qwen3.5-27B Q4_K_M vs Qwen3.5-35B-A3B Q4_K_M, both with `--fit on`, same hardware.
+
+**Results:**
+
+| Model | tok/s | PPL | Notes |
+|-------|-------|-----|-------|
+| 35B-A3B Q4_K_M | 74.7 | 6.6688 | Expert offloading via `--fit` |
+| 27B dense Q4_K_M | 7.4 | ~6.47 | Full model barely fits, PCIe saturated |
+
+The speed difference is **10×**. The 27B dense Q4_K_M file is approximately 17GB — just barely over the 16GB VRAM limit. With `--fit on`, it can run, but the dense architecture means *all* feedforward layers must go through PCIe on every token, with no ability to skip unused experts. The result is extremely slow generation.
+
+**Important caveat from the thread:** Multiple users (u/_-_David, u/ArckToons) pushed back on gaztrab's initial framing that "the 35B-A3B dominates on both speed AND quality." Perplexity on WikiText-2 is not a valid cross-model quality metric — different models have different training distributions, and comparing their PPL directly is methodologically unsound. On capability benchmarks, the 27B dense model scores higher than the MoE on instruction following and reportedly ties GPT-5 mini on SWE-bench Verified at 72.4%. Users running the 27B on a 4090 (24GB VRAM) with full in-VRAM inference at 28+ tok/s describe it as their preferred model for agentic tasks where quality matters more than speed.
+
+**Verdict:** On a 16GB GPU, the 35B-A3B MoE wins on speed by an order of magnitude, making the 27B dense effectively impractical for interactive use. On a 24GB GPU, the 27B dense becomes genuinely competitive — slower, but with stronger per-token reasoning. The right choice depends on your hardware tier, not on any universal quality ranking.
+
+---
+
+## 10. Experiment 5: The `--fit on` Flag — What It Does and Why It Matters
+
+**Community request:** What exactly does `--fit on` do, and how does it compare to manually configuring `--n-cpu-moe`?
+
+### The Problem `--fit` Solves
+
+Before `--fit on` landed in mainline llama.cpp, optimal MoE inference required manual configuration of expert offloading. The key command was:
+
+```bash
+-ngl 999 --n-cpu-moe 24
+```
+
+This tells llama.cpp to put all 999 layers on GPU (`-ngl 999`) but then move 24 MoE expert layers to CPU (`--n-cpu-moe 24`). The "24" was determined by trial and error: start with more CPU layers, check VRAM usage in `nvidia-smi`, reduce until VRAM is ~95% utilized without overflow. This process took 20–40 minutes of iteration per hardware configuration.
+
+The alternative pattern using tensor overrides (`-ot`) allows even more granular control:
+```bash
+-ngl 999 -ot "exps=CPU"
+```
+This assigns all expert (`exps`) tensors to CPU while keeping attention and norms on GPU.
+
+`--fit on` automates this. According to the llama.cpp source, `--fit` queries available GPU VRAM, accounts for context buffer size and compute buffer requirements, and automatically splits expert layers between GPU and CPU to maximally utilize available memory without overflowing. It also reserves approximately 1 GB of VRAM as a safety buffer by default.
+
+### The Results
+
+**Configuration E4 vs manual tuning:**
+
+| Config | Strategy | tok/s | VRAM |
+|--------|----------|-------|------|
+| `--fit on` only | Auto | ~67 | ~14.5 GB |
+| `--n-cpu-moe 24` | Manual | 69.6 | 14.9 GB |
+| `--fit on`, no `-b/-ub` | Auto + batch fix | **74.7** | **14.6 GB** |
+
+The key discovery was the interaction between `--fit` and batch size flags.
+
+### The Batch Flag Problem
+
+The original benchmark configurations included `-b 4096 -ub 4096` (logical and physical batch sizes) because they improve prompt processing speed. However, these flags allocate a large compute buffer in VRAM *at startup*. The `--fit` algorithm measures available VRAM *before* this buffer is allocated — so it makes its expert-placement decision based on VRAM that the batch buffers then consume.
+
+The result: with `-b 4096 -ub 4096`, `--fit` believes it has more VRAM for experts than it actually does. The model may overflow into shared VRAM (system RAM mapped through the PCIe address space), which is catastrophically slow. Without those flags, `--fit` sees the true VRAM headroom and places experts correctly.
+
+Dropping the batch flags:
+- **TG (token generation):** 48.3 → **74.7 tok/s** (+54.7%)
+- **PP (prompt processing):** 1532 → 1390 t/s (−9.3%)
+
+This is the tradeoff: removing batch flags massively improves token generation at the cost of somewhat slower prompt processing. For interactive use (typing a question and waiting for the answer), TG speed is what you feel — the prompt processing of your question happens in a fraction of a second regardless. The 74.7 tok/s TG speed is what matters for the user experience of reading the response.
+
+**The middle ground** (suggested by u/Chromix_): `-ub 1024 -b 2048` gives PP +22% versus no-batch while losing only TG −3.5%. For agentic use cases where 4K-token prompts are common and TG of 512 tokens happens frequently, this may be the better configuration.
+
+**Vulkan note:** u/Corosus reported that `--fit on` *tanks* performance on Vulkan backends (13 tok/s versus 33 tok/s with manual `--n-cpu-moe`). The `--fit` algorithm appears to be tuned for CUDA compute characteristics and overloads the GPU with layers that actually run faster on CPU via DDR4 on Vulkan paths. **Vulkan users should use manual `--n-cpu-moe` tuning** rather than `--fit`.
+
+**Verdict:** `--fit on` is the recommended default for CUDA users because it eliminates manual VRAM-tuning friction. The critical companion insight: **do not use `-b 4096 -ub 4096` with `--fit on`**. Add `--fit-target 256` (reduces default 1 GB headroom to 256 MB) to squeeze out a few additional tok/s from more aggressive VRAM utilization.
+
+---
+
+## 11. Experiment 6: The KL Divergence Validation
+
+**Community request:** PPL is questioned as a metric. Run actual KLD to confirm the quantization quality rankings.
+
+**Setup:** KLD computation requires a two-pass process. First, generate base logits from the reference model (Q8_0) and save them to a file. Then compare each candidate quantization's logits against that saved baseline on the same token sequence. This is computationally expensive (~25 minutes per full evaluation run).
+
+The command sequence:
+```bash
+# Pass 1: Generate reference logits from Q8_0
+llama-perplexity -m Q8_0.gguf -f wiki.test.raw --kl-divergence-base kld-base.bin
+
+# Pass 2: Compare each quant against reference
+llama-perplexity -m Q4_K_M.gguf --kl-divergence-base kld-base.bin --kl-divergence
+```
+
+**Results (KLD and top-1 agreement):**
+
+| Quant | Mean KLD | Same Top-1 % | Interpretation |
+|-------|----------|--------------|----------------|
+| Q8_0 (reference) | 0.000 | 100.0% | Perfect |
+| Q4_K_M | 0.028 | 92.4% | Excellent |
+| Q4_K_L (bartowski) | 0.018 | 94.2% | Excellent |
+| MXFP4_MOE | 0.050 | 91.0% | Good |
+| UD-Q4_K_XL | 0.109 | 86.2% | Poor |
+
+**KLD interpretation:** A mean KLD of 0.028 for Q4_K_M means that on average, across all tokens in the test corpus, the Q4_K_M model's output probability distribution differs from the Q8_0 reference by 0.028 nats. The "Same Top-1 %" column shows what fraction of token positions the quantized model would pick the same next token as Q8_0. At 92.4%, Q4_K_M agrees with the reference model on 9 out of every 10 tokens.
+
+The UD-Q4_K_XL result (0.109 mean KLD, 86.2% top-1 agreement) confirms the PPL finding: this quantization has meaningfully diverged from the reference model's behavior. One in seven tokens, the model is making a different prediction than the higher-quality reference — not because the task is hard, but because the quantization has altered the probability landscape.
+
+**The KLD result for KV quantization:** Gaztrab did not run explicit KLD comparisons across KV cache quantization levels (this was identified as a gap in methodology by u/ArckToons). The PPL data showed under 0.4% difference between KV f16 and KV q8_0, and gaztrab estimated KLD would be "similarly minimal — but that's an assumption, not data." This remains an open question.
+
+**Verdict:** KLD validates the PPL findings and adds important nuance about behavioral change, not just score change. Q4_K_M is excellent. Q4_K_L is marginally better. MXFP4 is good but not fast. UD-Q4_K_XL (pre-fix) is genuinely bad for MoE models and should be avoided.
+
+---
+
+## 12. Experiment 7: Speculative Decoding — A Dead End
+
+**Community request:** Speculative decoding uses a small "draft" model to propose tokens that the large model then verifies in parallel, potentially achieving >1 token per step. Is there a draft model compatible with Qwen3.5-35B-A3B?
+
+**Setup:** Gaztrab investigated compatible draft models for speculative decoding.
+
+**Result:** **No viable draft model exists.** The core issue is vocabulary mismatch: Qwen3.5-35B-A3B uses a 248,320-token vocabulary (padded). Most small models use 32K–151K vocabularies. Speculative decoding requires that draft and target models share an identical vocabulary — the draft's token IDs must be directly interpretable by the target's verification step.
+
+The only models that share the Qwen3.5 vocabulary are other Qwen3.5 models, which are too large to serve as efficient draft models. Even the smallest Qwen3.5 variants (0.8B, 2B) would need to fit in VRAM *alongside* the 35B-A3B target, which is not feasible on 16GB.
+
+**N-gram self-speculation** (where the target model speculates its own tokens based on recent context) was also tested and provided no measurable benefit.
+
+**Verdict:** Speculative decoding is not viable for Qwen3.5-35B-A3B on 16GB VRAM in the current ecosystem. With only ~1.2 GB of free VRAM at the optimal configuration, there is no room for a draft model. This is a known limitation of MoE architectures with unusual vocabulary sizes. The situation may improve as smaller Qwen3.5 models are optimized for draft use.
+
+---
+
+## 13. The Community's Bonus: AesSedai and MoE-Aware Quantization
+
+One of the most technically interesting threads in the companion post (u/TitwitMuffbiscuit's "Qwen3.5-35B-A3B Q4 Quantization Comparison") was a detailed explanation by u/Digger412 — who revealed themselves to be **AesSedai**, a quantizer whose GGUFs had been consistently outperforming alternatives on KLD benchmarks.
+
+The insight AesSedai describes is elegant: standard quantization recipes like Q4_K_M are agnostic about which tensors matter for quality. They apply the same tier logic across all feedforward layers. But in a MoE model, the structure is radically asymmetric:
+
+- **Attention tensors, shared experts, norms**: These fire on *every* token. They are ~10% of total model size but 100% active.
+- **Routed expert FFN tensors**: These fire on ~8/256 = 3.1% of activations on any given token. They are ~90% of total model size but mostly dormant.
+
+AesSedai's MoE-optimized quants keep attention layers, shared experts, and embedding tables at **Q8_0** — preserving their quality — while quantizing the routed expert FFN layers more aggressively at IQ3_S (gate/up) and IQ4_XS (down). The result: a file that is similar in size to Q4_K_M but preserves the high-utilization tensors at twice the precision.
+
+The tensor manifest for AesSedai's IQ4_XS quant:
+```
+attn_gate, attn_k, attn_output, attn_q, attn_v → Q8_0 (always active)
+ffn_down_exps  → IQ4_XS (routed expert, down projection)
+ffn_gate_exps  → IQ3_S  (routed expert, gate projection)
+ffn_up_exps    → IQ3_S  (routed expert, up projection)
+ffn_*_shexp    → Q8_0   (shared expert, always active)
+output, token_embd → Q8_0 (embedding, always active)
+```
+
+On the RTX 5060 Ti (tested by u/bobaburger), AesSedai's Q4_K_M achieved **mean KLD of 0.0096** versus Unsloth UD-Q4_K_M's 0.0192 — roughly 2× better quality at the same bit budget, at the cost of slightly slower throughput (34.89 vs 40.64 tok/s). Whether that tradeoff is worth it depends on use case.
+
+The broader lesson: **"Q4_K_M" is not a single format.** It is a naming convention applied differently by different quantizers. Bartowski's Q4_K_M, Unsloth's Q4_K_M, and AesSedai's Q4_K_M all produce different tensor-level bit assignments. Without KLD data per quantizer, the name alone tells you almost nothing about actual quality.
+
+---
+
+## 14. Practical Recommendations: What to Use When
+
+Based on all seven experiments and the community discussion, here is the decision matrix:
+
+### The Optimal Configuration (RTX 5080 16GB, CUDA)
+
+```bash
+./llama-server \
+  -m ./Qwen3.5-35B-A3B-Q4_K_M.gguf \
+  -c 65536 \
+  --fit on \
+  --fit-target 256 \
+  -fa on \
+  -t 20 \
+  --no-mmap \
+  --jinja \
+  -ctk q8_0 \
+  -ctv q8_0
+```
+
+**Do NOT add:** `-b 4096 -ub 4096` (kills TG speed by ~35%)  
+**Expected performance:** ~74.7 tok/s TG, ~1390 tok/s PP at 512-token context
+
+### Quantization Selection by VRAM
+
+| VRAM | Recommended Quant | Expected Speed | Notes |
+|------|-------------------|----------------|-------|
+| 16 GB | Q4_K_M | ~75 tok/s | Sweet spot, partially offloaded |
+| 16 GB (max quality) | Q4_K_L | ~41 tok/s | −45% speed for +0.9% better PPL |
+| 24 GB | Q4_K_M or Q4_K_L | 90–110 tok/s | Fits fully in VRAM |
+| 24 GB (quality) | Q8_0 (partial) | ~50–60 tok/s | Partial fit, ~14 GB on GPU |
+| 32+ GB | Q8_0 | 40+ tok/s | Full in-VRAM, highest quality |
+
+### Which Quantizer to Trust
+
+1. **Bartowski** (Q4_K_M, Q4_K_L, Q2_K_L): Transparent methodology, private imatrix dataset confirmed not to include WikiText-2. Consistently good KLD. Safe default.
+2. **AesSedai**: MoE-aware recipes with explicitly Q8_0 attention layers. Best-in-class KLD for MoE at equivalent bit widths. Slower TG due to larger high-precision attention tensors.
+3. **Unsloth** (post-March 5 fix): Dynamic 2.0 GGUFs now corrected. Re-download if you have pre-fix Q2_K_XL, Q3_K_XL, or Q4_K_XL variants. Unsloth's imatrix calibration data is generally strong. UD-Q4_K_M is solid.
+4. **ubergarm**: Specializes in ik_llama.cpp-specific quants that leverage non-standard extensions. Best for Vulkan/AMD setups.
+
+### KV Cache Settings
+
+- **Always use `-ctk q8_0 -ctv q8_0`** with `-fa on` for interactive use at standard contexts.
+- **Consider reverting to f16 KV** for >50K token contexts where accumulated KV quantization error may become perceptible (pending experimental confirmation).
+- **Do not use `-ctk q4_0`**: the 0.11% PPL degradation is small, but the additional KV precision drop adds up at long contexts with no meaningful VRAM benefit over q8_0.
+
+---
+
+## 15. Broader Implications: Can We Trust Quantization?
+
+The experiments, taken together, tell a story that is more optimistic than the skeptics claim and more nuanced than the enthusiasts admit.
+
+**The optimistic reading:** 4-bit quantization of a 35B-parameter MoE model preserves 92.4% of top-1 token agreement with the 8-bit reference. For the vast majority of text generation tasks, you cannot distinguish Q4_K_M output from Q8_0 output in practice. The model's training-time alignment, safety tuning, and reasoning capabilities survive 4-bit compression with minimal perceptible loss. This is remarkable.
+
+**The nuanced reading:** "Accuracy is not all you need." The 7.6% of tokens where Q4_K_M and Q8_0 disagree are not random. They may be systematically weighted toward rare tokens, edge cases, difficult reasoning steps, or specific code constructs. A model with 92.4% top-1 agreement can still produce subtly different code, fail at edge cases the reference model handles correctly, or generate marginally less fluent text in specific domains. The KLD captures the direction of this divergence even when benchmark scores do not.
+
+**The lesson about MoE:** Expert layer quantization is more sensitive than expected. AesSedai's insight — keep always-active tensors at high precision, compress dormant experts aggressively — is the correct framework. The failure mode of UD-Q4_K_XL (MXFP4 in the wrong places) shows that naive bit-allocation can make a MoE model significantly worse despite using the same average bits-per-weight. MoE-aware quantization recipes are not optional for frontier quality.
+
+**The lesson about tooling:** The gap between Ollama (21.6 tok/s) and properly configured llama.cpp (74.7 tok/s) for the same model on the same hardware is a 3.5× speedup — entirely from inference infrastructure choices. Ollama's layer-level MoE splitting versus llama.cpp's expert-level splitting explains most of this gap. As u/gaztrab noted, an open PR (`ollama/ollama#12333`) exists to add proper MoE offloading to Ollama. Until it lands, mainline llama.cpp is the correct tool for MoE models on consumer hardware.
+
+**The lesson about community science:** The entire seven-experiment sequence happened because gaztrab's original post attracted 80 comments with specific, testable questions, he ran those tests in 48 hours, and the follow-up post attracted 192 more comments that corrected, extended, and validated the findings. Unsloth shipped corrected GGUFs same-day. Bartowski's quality was independently validated. This is peer review at community scale.
+
+---
+
+## 16. Conclusion
+
+The headline result stands: **KV q8_0 is a free lunch.** For most users on 16GB VRAM hardware, enabling `-ctk q8_0 -ctv q8_0` is the single highest-ROI configuration change available — free speed, negligible quality cost, immediate benefit.
+
+But the more interesting result is the overall benchmark table it sits inside:
+
+```
+Q4_K_M + KV q8_0 + --fit on (no batch flags):
+   → 74.7 tok/s
+   → 6.6688 PPL (+2.1% vs Q8_0)
+   → 0.028 mean KLD
+   → 92.4% top-1 agreement
+   → 14.6 GB VRAM
+```
+
+This is a 35-billion-parameter model with 262K context capability, running at 74 tokens per second on a consumer GPU. Five years ago, this would have required a cluster. Today it requires an $800 GPU and a Docker command.
+
+The experiment sequence also demonstrates something about the current state of local LLM tooling: there is enormous variance in performance and quality across ostensibly equivalent configurations. The difference between a badly-configured MoE inference server and a well-configured one is 3–10× in speed. The difference between a well-chosen and poorly-chosen quantization at the same bit width is nearly 4× in KLD. These are not small margins — they are the difference between a model that is practically useful and one that is frustratingly slow or subtly wrong.
+
+The community running these experiments in public, with reproducible setups and honest reporting of failure cases (the Unsloth MXFP4 issue, the batch flag interaction, the Vulkan incompatibility), is the mechanism that closes those gaps. Gaztrab's opt-in approach of "growing up on the early internet where knowledge is shared for free" is exactly the culture that makes this kind of distributed optimization possible.
+
+If you have a 16GB GPU, run the command in the Experiment 5 section. Expect ~75 tokens per second. And check back when someone runs the long-context KV cache quantization experiment — that is the one open question worth watching.
+
+---
+
+## References and Sources
+
+### Primary Sources
+
+- **gaztrab's follow-up post** (February 27, 2026): [r/LocalLLaMA](https://reddit.com/r/LocalLLaMA/comments/1rg4zqv/followup_qwen3535ba3b_7_communityrequested/)
+- **gaztrab's original benchmark post** (February 25, 2026): [r/LocalLLaMA](https://reddit.com/r/LocalLLaMA/comments/1rei65v/qwen3535ba3b_quantization_quality_speed/)
+- **TitwitMuffbiscuit's Q4 comparison** (February 26, 2026): [r/LocalLLaMA](https://reddit.com/r/LocalLLaMA/comments/1rfds1h/qwen3535ba3b_q4_quantization_comparison/)
+- **Unsloth's updated GGUFs + investigation** (February 27, 2026): [r/LocalLLaMA](https://reddit.com/r/LocalLLaMA/comments/1rgel19/new_qwen3535ba3b_unsloth_dynamic_ggufs_benchmarks/)
+- **gaztrab's GitHub repository**: [gaztrabisme/llm-server](https://github.com/gaztrabisme/llm-server)
+
+### Model and Architecture
+
+- **Qwen3.5-35B-A3B Model Card**: [Hugging Face](https://huggingface.co/Qwen/Qwen3.5-35B-A3B)
+- **Qwen3.5 Release Blog**: [Alibaba Cloud](https://www.alibabacloud.com/blog/qwen3-5-towards-native-multimodal-agents_602894)
+- **Unsloth Qwen3.5 Guide**: [Unsloth Docs](https://unsloth.ai/docs/models/qwen3.5)
+
+### Technical Background
+
+- **MoE CPU+GPU Offloading Guide** by Doctor-Shotgun: [Hugging Face Blog](https://huggingface.co/blog/Doctor-Shotgun/llamacpp-moe-offload-guide)
+- **"Why Maybe We're Measuring LLM Compression Wrong"** — KLD vs PPL: [Hugging Face Blog](https://huggingface.co/blog/rishiraj/kld-guided-quantization)
+- **Unsloth Dynamic 2.0 GGUF explanation**: [Unsloth Docs](https://unsloth.ai/docs/basics/unsloth-dynamic-2.0-ggufs)
+
+### Community Quantizers
+
+- **Bartowski GGUF releases**: [Hugging Face](https://huggingface.co/bartowski)
+- **AesSedai (Digger412) GGUF releases**: [Hugging Face](https://huggingface.co/AesSedai)
+- **ubergarm GGUF releases**: [Hugging Face](https://huggingface.co/ubergarm)
+
+### Tools
+
+- **llama.cpp** (ggml-org): [GitHub](https://github.com/ggml-org/llama.cpp)
+- **Unsloth Qwen3.5-35B-A3B Experiments GGUF collection**: [Hugging Face](https://huggingface.co/unsloth/Qwen3.5-35B-A3B-Experiments-GGUF)
+
+---
+
+*Data collected February 25–27, 2026. All benchmark numbers from gaztrab's public repository and Reddit posts. Quantization quality metrics (PPL, KLD) evaluated on WikiText-2 test set against Q8_0 reference. Hardware: NVIDIA RTX 5080 16GB GDDR7, AMD Ryzen 9 9950X, 128 GB DDR5-4800, CUDA 13.1 with native sm_120 Blackwell kernels.*

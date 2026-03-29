@@ -1,0 +1,658 @@
+---
+title: "Why Function Calling Is Wrong for Agents: Lessons from Manus"
+description: "A former Manus backend lead explains why a single run(command) tool with Unix-style commands outperforms catalogs of typed function calls — and the production failures that led to this conclusion."
+pubDate: 2026-03-29
+coverImage: "https://images.unsplash.com/photo-1629654297299-c8506221ca97?w=1200&h=600&fit=crop"
+coverAlt: "Terminal command line interface showing Unix pipes and text streams"
+author: "default"
+tags: ["ai-agents", "function-calling", "unix-philosophy", "manus", "cli", "llm"]
+draft: false
+series: "LocalLLaMA Gold"
+seriesOrder: 1
+---
+
+*Posted March 2026 • 6,800 words • Technical Deep-Dive*
+
+---
+
+## 1. The Surprising Claim
+
+On March 12, 2026, a post appeared on r/LocalLLaMA that quickly accumulated nearly 2,000 upvotes and almost 400 comments — numbers that put it among the most-discussed technical threads in the community's recent history. The author, u/MorroHsu, opened with a single declarative sentence:
+
+> "A single `run(command="...")` tool with Unix-style commands outperforms a catalog of typed function calls."
+
+This is a provocation. It is the kind of claim that sounds like it could be clickbait from someone who has never shipped anything. But MorroHsu is not that person. He was the backend lead at Manus — the Singapore-based AI agent company that Meta acquired in late December 2025 for over $2 billion USD — and he spent two full years building production AI agents before leaving to work on his own open-source agent runtime, [Pinix](https://github.com/epiral/pinix), and its flagship agent, [agent-clip](https://github.com/epiral/agent-clip).
+
+He did not arrive at his conclusion in a conference room. He arrived at it through production failures: a PNG file that caused an agent to thrash for 20 iterations, a dropped `stderr` stream that caused 10 blind retry calls costing roughly 50 seconds of inference time, and a 5,000-line log file that overwhelmed a model's attention mechanism so badly it forgot its earlier conversation context. This post is the distillation of those failures — and it deserves careful examination by anyone building agents today.
+
+---
+
+## 2. What Function Calling Actually Is — and Where It Breaks
+
+To understand MorroHsu's argument, we need to be precise about what "function calling" means in practice.
+
+When OpenAI introduced function calling in June 2023, the paradigm looked elegant. You define a catalog of typed tools as JSON Schema objects — `search_web`, `read_file`, `write_file`, `run_python`, `send_email` — and the model selects among them, fills in their typed parameters, and returns a structured JSON payload for your runtime to execute. The appeal is obvious: typed parameters, schema validation, clear intent.
+
+Here is what a typical multi-tool setup looks like:
+
+```json
+{
+  "tools": [
+    {
+      "name": "search_web",
+      "description": "Search the internet for information",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string" },
+          "num_results": { "type": "integer", "default": 5 }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "read_file",
+      "description": "Read the contents of a file",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "write_file",
+      "description": "Write content to a file",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "content": { "type": "string" }
+        },
+        "required": ["path", "content"]
+      }
+    },
+    {
+      "name": "run_code",
+      "description": "Execute Python code in a sandbox",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string" }
+        },
+        "required": ["code"]
+      }
+    }
+  ]
+}
+```
+
+This pattern works reasonably well when the tool count is small and the task is narrow. The problems compound when you scale.
+
+### The Tool-Selection Tax
+
+Every function call has a hidden overhead that the tooling community rarely discusses: **cognitive load at selection time**. Before the model can do anything, it must answer: which tool? When you have 4 tools, this is trivial. When you have 14 tools — which is common in production agents handling diverse workflows — the model's attention is now split across 14 separate JSON schemas before it can begin reasoning about the *actual task*.
+
+MorroHsu frames this precisely:
+
+> "Cognitive load is spent on 'which tool?' instead of 'what do I need to accomplish?'"
+
+This is not a theoretical concern. Empirical studies on function calling reliability have shown that tool selection accuracy degrades as the catalog grows. The Gorilla research project, which benchmarked LLM function calling accuracy against APIs from HuggingFace, TorchHub, and TensorFlow, found that models hallucinate function signatures and misroute calls in ways that are difficult to recover from in production loops. Each wrong function call doesn't just fail — it burns context tokens and often triggers a cascade of confused follow-up calls.
+
+### The Composition Problem
+
+The second failure mode is more structural. Consider a task as mundane as "count the error lines in a log file." In a function-calling architecture, this requires at minimum three sequential calls:
+
+```
+Step 1: read_file(path="/var/log/app.log")
+        → returns: [entire 50,000 line file as a string]
+
+Step 2: search_text(text=<entire file>, pattern="ERROR")
+        → returns: [all matching lines]
+
+Step 3: count_lines(text=<matched lines>)
+        → returns: 42
+```
+
+Each step requires the model to route to a different function, wait for a result, parse it, and decide on the next step. The entire file content is passed through the model's context — potentially multiple times — before a simple integer answer is produced.
+
+The Unix alternative is one line: `cat /var/log/app.log | grep ERROR | wc -l`. One tool call. The result is `42`. No intermediate steps. No context pollution.
+
+This is not a cherry-picked example. It is the pattern that reveals the fundamental tension: **function calling was designed for discrete, typed operations, but real agent tasks are compositional workflows**. The mismatch between these two facts is where production agents break down.
+
+---
+
+## 3. The Unix Insight: 50 Years of Proven Interface Design
+
+MorroHsu's central insight begins with a historical observation that is easy to dismiss as rhetorical but turns out to be structurally significant:
+
+> "Unix made a design decision 50 years ago: everything is a text stream. Programs don't exchange complex binary structures or share memory objects — they communicate through text pipes. Small tools each do one thing well, composed via `|` into powerful workflows."
+
+Then the pivot:
+
+> "LLMs made an almost identical decision 50 years later: everything is tokens. They only understand text, only produce text. Their 'thinking' is text, their 'actions' are text, and the feedback they receive from the world must be text."
+
+This is not a surface-level analogy. It is an architectural alignment. Unix was designed around a specific insight about human operators: people working at terminals think in sequences, compose operations incrementally, and need error messages that tell them what went wrong and what to do next. The entire CLI ecosystem — `--help` flags, `man` pages, exit codes, `stderr`, pipes — is an interface designed to bridge the gap between human intent and machine execution.
+
+LLMs are, in an important sense, the same kind of operator. They process text sequentially, they compose operations by stringing commands together, and they need error messages that guide recovery. The key difference is speed and scale: an LLM terminal operator is orders of magnitude faster than a human and has already been trained on billions of lines of shell commands, README files, CI/CD scripts, and Stack Overflow answers.
+
+> "I don't need to teach the LLM how to use CLI — it already knows."
+
+This observation carries real weight. When you write `tools: [search_web, read_file, write_file]` in your agent prompt, you are asking the model to learn a bespoke interface that exists nowhere in its training data. When you write `run(command="...")`, you are activating fifty years of accumulated CLI knowledge that is densely represented in every code corpus ever assembled.
+
+The training data argument is not just intuition. GitHub, the largest source of code training data, is dense with patterns like:
+
+```bash
+# README install instructions
+pip install -r requirements.txt && python main.py
+
+# CI/CD build scripts  
+make build && make test && make deploy
+
+# Stack Overflow answers
+cat /var/log/syslog | grep "Out of memory" | tail -20
+```
+
+These patterns are exactly what `run(command="...")` leverages. The model isn't learning a new skill — it's exercising a deeply ingrained one.
+
+---
+
+## 4. The Architecture: Single Tool, Infinite Composition
+
+The implementation MorroHsu built around this insight — fully open-sourced as [agent-clip](https://github.com/epiral/agent-clip) on top of the [Pinix](https://github.com/epiral/pinix) runtime — exposes exactly one tool to the LLM:
+
+```go
+// The entire tool surface, from the LLM's perspective
+run(command string, stdin? string) → string
+```
+
+That's it. One function. One parameter (plus an optional stdin for data payloads). And through that single interface, the agent accesses everything:
+
+```bash
+# File operations
+run(command="ls")
+run(command="cat notes.md")
+run(command="write report.txt", stdin="content here")
+run(command="stat image.png")
+
+# Memory operations
+run(command="memory search 'deployment issue'")
+run(command="memory store 'API key expires 2026-06'")
+run(command="memory facts")
+
+# Browser and vision
+run(command="browser screenshot")
+run(command="see screenshot.png")
+
+# External service calls
+run(command="clip sandbox bash 'python3 analyze.py'")
+run(command="clip list")
+
+# And critically, compositions — all in one call:
+run(command="cat access.log | grep '500' | sort | head 10")
+run(command="curl -sL $URL -o data.csv && cat data.csv | head 5")
+run(command="cat config.yaml || echo 'config not found, using defaults'")
+```
+
+### Chain Parsing: Four Operators, Exponential Expressiveness
+
+A single `run` that only executes one command at a time would still require multiple round-trips for compositional tasks. The agent-clip implementation solves this by parsing Unix chain operators in the command string before dispatch:
+
+| Operator | Semantics |
+|----------|-----------|
+| `\|` | Pipe: stdout of previous becomes stdin of next |
+| `&&` | And: execute next only if previous succeeded (exit:0) |
+| `\|\|` | Or: execute next only if previous failed (exit:non-0) |
+| `;` | Seq: execute next regardless of previous result |
+
+This is implemented in `internal/chain.go`. The key insight from the architecture is that **chain parsing happens at the routing layer, before execution** — which means each step in the pipe gets raw, unmodified output from the previous step. This matters enormously.
+
+If you truncate output inside a pipe (say, limit `cat`'s output to 200 lines), then `grep` only searches 200 lines — producing incorrect results. Layer 1 must remain lossless. Processing for the LLM happens only after the full chain completes, in what MorroHsu calls the "presentation layer."
+
+### The Two-Layer Architecture
+
+This is one of the most architecturally significant ideas in the post:
+
+```
+┌─────────────────────────────────────────────┐
+│  Layer 2: LLM Presentation Layer            │
+│  Binary guard | Truncation+overflow | Meta  │
+├─────────────────────────────────────────────┤
+│  Layer 1: Unix Execution Layer              │
+│  Command routing | pipe | chain | exit code │
+└─────────────────────────────────────────────┘
+```
+
+**Layer 1 serves Unix semantics. Layer 2 serves LLM cognition.**
+
+Layer 2 applies four mechanisms before returning results to the model:
+
+**Mechanism A — Binary Guard:** Before returning any output, check if it's binary data:
+```
+Null byte detected        → binary
+UTF-8 validation failed   → binary
+Control character ratio > 10% → binary
+```
+If it's a binary image: `[error] binary image (182KB). Use: see photo.png`  
+If it's another binary: `[error] binary file (1.2MB). Use: cat -b file.bin`
+
+The model never receives data it cannot process. This sounds obvious. It is *not* universally implemented — and its absence caused the 20-iteration thrashing incident described in the production stories below.
+
+**Mechanism B — Overflow Mode:** If output exceeds 200 lines or 50KB:
+```
+[first 200 lines of content]
+
+--- output truncated (5000 lines, 245.3KB) ---
+Full output: /tmp/cmd-output/cmd-3.txt
+Explore: cat /tmp/cmd-output/cmd-3.txt | grep <pattern>
+         cat /tmp/cmd-output/cmd-3.txt | tail 100
+[exit:0 | 1.2s]
+```
+The truncated output is written to a temp file. The LLM already knows `grep`, `head`, and `tail` — so it can navigate the large file using skills it already possesses. This transforms "context explosion" into "navigable exploration."
+
+**Mechanism C — Metadata Footer:** Every result ends with:
+```
+[exit:0 | 1.2s]
+```
+Exit code (Unix convention) plus execution duration. After seeing this format dozens of times, the model internalizes it: `exit:0` means success, `exit:127` means command not found, `45s` means expensive.
+
+**Mechanism D — stderr Attachment:** When a command fails with stderr output:
+```
+[actual stdout output]
+[stderr] bash: pip: command not found
+[exit:127 | 23ms]
+```
+The agent sees *why* it failed, not just *that* it failed.
+
+---
+
+## 5. Heuristic Design: Making the CLI Guide the Agent
+
+The single-tool architecture solves "what interface." But the agent still needs to know what commands exist and how to use them. MorroHsu's answer is three progressive design techniques that mirror Unix's own self-documentation philosophy.
+
+### Technique 1: Progressive `--help` Discovery
+
+The `run` tool's description (what the LLM sees in its system context) is dynamically generated at conversation start, listing all registered commands with one-line summaries:
+
+```
+Available commands:
+- cat     — Read a text file. For images use 'see'. For binary use 'cat -b'.
+- see     — View an image (auto-attaches to vision)
+- ls      — List files in current topic
+- write   — Write file. Usage: write <path> [content] or stdin
+- grep    — Filter lines matching a pattern (supports -i, -v, -c)
+- memory  — Search or manage memory
+- clip    — Operate external environments (sandboxes, services)
+```
+
+When the agent wants to know more about a specific command, it just calls it with no arguments:
+
+```
+→ run(command="memory")
+[error] memory: usage: memory search|recent|store|facts|forget
+
+→ run(command="clip")
+clip list         — list available clips
+clip <name>       — show clip details and commands
+clip <name> <command> [args...] — invoke a command
+clip <name> pull <remote-path> [name]  — pull file from clip to local
+clip <name> push <local-path> <remote> — push local file to clip
+```
+
+And when it needs parameter-level detail:
+
+```
+→ run(command="memory search")
+[error] memory: usage: memory search <query> [-t topic_id] [-k keyword]
+```
+
+Three levels of disclosure. Overview injected at context-start. Usage explored on demand. Parameters drilled down only when needed. This is structurally different from stuffing 3,000 words of API documentation into the system prompt. Most of that documentation is irrelevant most of the time — it's pure context waste that pushes the model's attention toward irrelevancies.
+
+### Technique 2: Error Messages as Navigation
+
+> "Agents will make mistakes. The key isn't preventing errors — it's making every error point to the right direction."
+
+Traditional CLI errors are designed for humans who can Google. Agents can't Google. So every error message must contain both "what went wrong" and "what to do instead":
+
+```bash
+# Traditional CLI (designed for humans):
+$ cat photo.png
+cat: binary file (standard output)
+→ Human Googles "how to view image in terminal"
+
+# Agent-clip design:
+[error] cat: binary image file (182KB). Use: see photo.png
+→ Agent calls see directly. One-step correction.
+```
+
+More examples from the codebase:
+
+```
+[error] unknown command: foo
+Available: cat, ls, see, write, grep, memory, clip, ...
+→ Agent immediately knows what commands exist
+
+[error] not an image file: data.csv (use cat to read text files)
+→ Agent switches from see to cat
+
+[error] clip "sandbox" not found. Use 'clip list' to see available clips
+→ Agent knows to list clips first
+```
+
+The philosophy: recoveries should cost 1-2 steps, not 10.
+
+### Technique 3: Consistent Output Format
+
+Consistency in output format is what allows the model to build a calibrated mental model of the tool over time. Every result ends with `[exit:N | Xs]`. After dozens of interactions, the model has internalized a performance model of its own tools: it knows which commands are cheap (12ms), which are moderate (3.2s), and which are expensive (45s). This is cost-awareness built from signal, not instruction.
+
+---
+
+## 6. Production Stories: What Actually Broke
+
+Theory is cheap. These are the production failures that motivated the architecture:
+
+### Story 1: The PNG That Triggered 20 Iterations
+
+A user uploaded an architecture diagram. The early version of the agent had no binary detection. When it called `cat architecture.png`, it received 182KB of raw PNG bytes. The LLM's tokenizer turned these bytes into thousands of high-entropy, essentially random tokens jammed into the context.
+
+The model couldn't process the output. It couldn't understand what had happened. So it tried again, with variations: `cat -f`, `cat --format`, `cat --type image`. Each attempt returned the same garbage. After 20 iterations, the process was force-terminated by an external timeout.
+
+Root cause: `cat` had no binary detection. Layer 2 had no Binary Guard.  
+Fix: `isBinary()` check in the presentation layer. If positive: redirect to `see`.  
+**Lesson: The tool result is the agent's eyes. Return garbage = agent goes blind.**
+
+### Story 2: Silent stderr and 10 Blind Retries
+
+The agent needed to read a PDF. It attempted to install `pymupdf`:
+
+```
+pip install pymupdf  → exit:127
+```
+
+The stderr contained `bash: pip: command not found`. But the code at the time dropped stderr when stdout was non-empty — the logic was "if stdout exists, ignore stderr." The agent only knew the call failed, not *why*.
+
+What followed was a 10-call, 50-second inference spiral:
+
+```
+pip install → 127         # doesn't exist
+python3 -m pip → 1        # module not found
+uv pip install → 1        # wrong usage
+pip3 install → 127        # doesn't exist
+sudo apt install → 127    # doesn't exist
+... 5 more attempts ...
+uv run --with pymupdf python3 script.py → 0  ✓  (10th try)
+```
+
+If stderr had been visible on the first call, one call would have been sufficient.
+
+Root cause: `InvokeClip` silently dropped stderr when stdout was non-empty.  
+Fix: Always attach stderr on failure (Mechanism D).  
+**Lesson: stderr is the information agents need most, precisely when commands fail.**
+
+### Story 3: The 5,000-Line Log
+
+Without overflow mode, analyzing a 5,000-line log file meant stuffing ~200KB into the context. The model's attention became overwhelmed. Response quality dropped sharply. Earlier conversation turns were pushed out of the context window entirely — the agent effectively forgot what it was trying to accomplish.
+
+With overflow mode:
+
+```
+[first 200 lines of log content]
+
+--- output truncated (5000 lines, 198.5KB) ---
+Full output: /tmp/cmd-output/cmd-3.txt
+Explore: cat /tmp/cmd-output/cmd-3.txt | grep <pattern>
+         cat /tmp/cmd-output/cmd-3.txt | tail 100
+[exit:0 | 45ms]
+```
+
+The agent saw the file's structure in the first 200 lines, identified what to look for, and used `grep` to pinpoint the issue in two more calls — under 2KB of context total.
+
+**Lesson: Giving the agent a map is far more effective than giving it the entire territory.**
+
+---
+
+## 7. How This Compares to Existing Approaches
+
+### Comparison: Function Calling vs. Unix-Style CLI
+
+| Dimension | Function Calling | Unix CLI (`run(command)`) |
+|-----------|-----------------|--------------------------|
+| **Tool selection** | Discrete schema per tool | String composition in unified namespace |
+| **Composition** | Multiple sequential calls | Pipes, chains in one call |
+| **Discovery** | System prompt documentation | `--help`, no-arg calls, on-demand |
+| **Error recovery** | Varies by implementation | Structured stderr + hint messages |
+| **Training data density** | Sparse (custom schemas) | Dense (50 years of CLI in corpora) |
+| **Context cost** | Per-call schema overhead | Dynamic, on-demand |
+| **Type safety** | Strong (JSON Schema) | Weak (string parsing) |
+| **Binary data** | Encoded in parameters | Requires guard layer |
+| **Injection risk** | Low (typed params) | Requires sandboxing |
+| **Composability** | Low | High |
+
+### The CodeAct Comparison: Code as Action Space
+
+MorroHsu's approach is in the same intellectual lineage as **CodeAct** (Wang et al., ICML 2024) — the paper behind HuggingFace's `smolagents` framework — which proposes consolidating LLM agent actions into a unified Python code execution space rather than discrete function calls.
+
+The CodeAct paper (arXiv:2402.01030) found that using executable Python code as the action representation "outperforms widely used alternatives (up to 20% higher success rate)" across 17 models on multiple benchmarks. HuggingFace's smolagents reports that code actions "uses 30% fewer steps (thus 30% fewer LLM calls) and reaches higher performance on difficult benchmarks" compared to tool-calling agents.
+
+The community immediately connected these ideas. Top commenter u/spaceman_ mentioned this work, to which MorroHsu responded:
+
+> "code-as-tool is a valid approach and the results are real. But from my experience, LLMs are currently better at *using* tools than *writing* code to do the same thing. The gap narrows with stronger models, but it's still there.
+>
+> There's also a deeper issue: **discoverability**. With CLI, the agent can run `tool --help` or `tool list` to discover what's available at runtime. With Python eval, how does the LLM know what functions/libraries are available? You either stuff the docs into context (expensive), or you have to invent your own discovery mechanism."
+
+This is an important distinction. CodeAct uses Python's full expressiveness — loops, conditionals, imports, object manipulation. The CLI approach uses a more constrained but more discoverable interface. Both are "unified action spaces," but they differ in the tradeoff between expressiveness and learnability. Commenter u/itsmekalisyn added a practical observation: "writing python code takes much of context length. The same code with cat and grep which is just one line will take more than 5 lines on python."
+
+### The Security Architecture (Addressing the Obvious Objection)
+
+The most common reaction to "give the agent `run(command)`" is a security concern, and it's legitimate. Commenter u/Time-Dot-1808 asked directly: "typed function calls let you define strict access boundaries upfront, whereas `run(command)` requires you to either trust the LLM fully or implement a custom command filter."
+
+MorroHsu's response revealed a crucial architectural detail that isn't obvious from the surface:
+
+> "Most commands never touch the OS. `cat`, `grep`, `memory search`, `browser open` — these look like shell commands but they're implemented as a Go command router. The LLM outputs a string, I parse it and dispatch to native functions. No `os/exec`, no shell injection surface. It's essentially typed functions wearing CLI syntax — same access control, but the LLM gets a familiar interface."
+
+This is a critical clarification. The `run(command)` API is a **facade**. Behind it:
+
+1. **Native Go commands** (no OS execution): `cat`, `grep`, `memory`, `browser`, `clip` — these hit Go functions directly. Same access control as typed function calls, zero injection surface.
+2. **Sandboxed OS execution** (isolated VM): When genuine shell execution is needed (`clip sandbox bash 'python3 analyze.py'`), it runs inside a BoxLite QCOW2 micro-VM with its own isolated filesystem. The agent can `rm -rf /` inside the sandbox and nothing happens to the host.
+
+The CLI *syntax* is what the LLM sees. The execution model underneath can be anything from a pure Go router to a hardware-isolated VM. MorroHsu summarizes this succinctly:
+
+> "It's not 'give the agent a Linux box.' It's 'speak the CLI protocol' — because that's the interface LLMs already understand best."
+
+### Other Systems Moving in This Direction
+
+This pattern is not unique to agent-clip. There's a convergence happening across several production agent systems:
+
+**OpenAI's Code Interpreter / Advanced Data Analysis** uses a sandboxed Python environment as the primary action interface — a single "execute code" surface rather than a catalog of typed tools. The agent composes operations by writing Python, not by selecting from a function menu.
+
+**Anthropic's Claude Computer Use** exposes three primitive actions — `screenshot`, `key`, `type` — and lets the model compose complex workflows from those primitives. The interface is minimal and unified rather than expansive and typed.
+
+**Manus itself** (now part of Meta), according to MorroHsu's comment in the thread, "definitely converged on the same direction. A lot of their tools were exposed as CLIs to the agent rather than typed function calls. They've talked about this in some of their blog posts and interviews."
+
+**mache** (from commenter u/notreallymetho), another community project, mounts codebase AST as a virtual filesystem where every function becomes a directory with `source`, `context`, `callers/`, and `callees/`. The interface is still `ls`/`cat`/`grep`/`write` — the same Unix primitives — applied to a structured view of code.
+
+The pattern is: **minimal, composable, text-based interfaces, with a presentation layer that handles the mismatch between raw execution and LLM cognition**.
+
+---
+
+## 8. Implications for Agent Builders
+
+Reading the 398 comments on this post reveals several important tensions that the community is actively wrestling with:
+
+### Tension 1: Discoverability vs. Context Budget
+
+The most open design question MorroHsu acknowledges himself: "Injecting the full command list vs. on-demand discovery. As commands grow, the list itself consumes context budget."
+
+The progressive `--help` system handles this partially — the injected list contains one-liners, not full documentation. But the right balance is still being explored. Community commenter u/General_Arrival_9176 articulated the core insight clearly: "what matters is whether the agent can discover capabilities on demand without you stuffing the entire docs into context. `--help` works for CLI, RAG over your tool docs works for code. Same goal, different implementation."
+
+Agent builders should consider: at what command count does dynamic injection become more expensive than the context it saves? The answer is system-specific, but the mechanism (progressive disclosure) is worth adopting regardless.
+
+### Tension 2: When Typed APIs Are the Right Answer
+
+MorroHsu explicitly acknowledges the limitations of the CLI approach:
+
+> **Strongly-typed interactions:** Database queries, GraphQL APIs, and other cases requiring structured input/output. Schema validation is more reliable than string parsing.
+
+> **High-security requirements:** CLI's string concatenation carries inherent injection risks. In untrusted-input scenarios, typed parameters are safer.
+
+> **Native multimodal:** Pure audio/video processing and other binary-stream scenarios where CLI's text pipe is a bottleneck.
+
+The argument is not "function calling is always wrong." It is "function calling is the wrong default for general-purpose agents." For narrow, typed, high-security operations, structured APIs remain the right tool.
+
+### Tension 3: The `stderr` Principle
+
+Perhaps the most immediately actionable lesson from this post is not the CLI architecture but the `stderr` design principle: **agents need failure information more than success information**.
+
+Top commenter u/Loud-Option9008 framed it precisely: "Dropping stderr is like removing error messages from a compiler and expecting developers to debug by guessing."
+
+In any agent framework — whether using function calling, code execution, or CLI — the failure path deserves more design attention than the success path. Every error should answer: what went wrong, and what should I do instead?
+
+### Tension 4: Cost Awareness
+
+Commenter u/mrtrly raised an issue that the post doesn't address directly: "Most agent builders focus on capabilities and forget that each tool call has a price tag. I have watched agent swarms burn through $50 in tokens on tasks that should have cost $2."
+
+The `[exit:0 | 1.2s]` metadata footer in agent-clip is the beginning of a cost-awareness mechanism — duration as a proxy for inference cost. But the deeper issue (routing simple requests to cheaper models) remains an open problem for most agent frameworks.
+
+### For Small Models Specifically
+
+One underappreciated aspect of the CLI approach is its benefit for smaller models. Commenter u/itsmekalisyn observed that CLI commands are significantly more token-efficient than equivalent Python code, which compounds favorably over long agent loops. For builders working with models below 70B parameters, the cognitive simplification of "there is one tool, write a CLI command" versus "there are 15 tools, select the right one and fill its schema" could meaningfully improve reliability.
+
+---
+
+## 9. The Code: What the Implementation Actually Looks Like
+
+The agent-clip repository (`github.com/epiral/agent-clip`) is written in Go and structured around a handful of core files:
+
+```
+internal/
+├── tools.go    — Command registry + builtins (the dispatcher)
+├── chain.go    — Pipe/chain parsing (&&, ||, |, ;)
+├── loop.go     — Agentic loop engine + two-layer boundary
+├── fs.go       — File I/O (ls, cat, write, stat, rm, cp, mv, mkdir)
+├── clip.go     — Clip-to-Clip invocation + stderr handling
+├── browser.go  — Browser control + screenshot auto-save
+├── memory.go   — Summary + embeddings + facts + semantic search
+├── llm.go      — LLM streaming + tool call parsing + vision
+└── context.go  — Context building (Run Window, XML)
+```
+
+The `tools.go` file implements the command registry pattern: every capability is registered as a named command with a handler function, a one-line description for the injected command list, and a full help string for no-arg discovery. The `run(command, stdin?)` function parses the command string, dispatches to the appropriate handler (or to `chain.go` if operators are detected), and passes the result through the Layer 2 presentation mechanisms before returning.
+
+The configuration is minimal. To add a new capability, you register it in the command registry:
+
+```go
+// Conceptual structure from internal/tools.go
+type Command struct {
+    Name        string
+    Description string  // One-liner for injected command list
+    Help        string  // Full help for no-arg discovery
+    Handler     func(args []string, stdin string) (string, int)
+}
+```
+
+The entire tool API surface the LLM sees is one JSON schema:
+
+```json
+{
+  "name": "run",
+  "description": "Execute a command. Available commands:\n- cat — Read a text file...\n- see — View an image...\n[dynamically generated at conversation start]",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": { "type": "string" },
+      "stdin": { "type": "string" }
+    },
+    "required": ["command"]
+  }
+}
+```
+
+That's the entire interface. One tool. One parameter. Everything else is text.
+
+The Pinix runtime (`github.com/epiral/pinix`) handles the deployment and routing layer — it runs Bun/TypeScript "Clips" locally, routes Clip-to-Clip calls through a Go Hub over Connect-RPC, and connects edge devices (iOS, remote machines) as Providers. The architecture is:
+
+```
+CLI / MCP / Portal
+        |
+        | Connect-RPC
+        v
++---------------------------+
+| Hub (routes by clip name) |
++-------------+-------------+
+              |
+      +-------+-------+
+      |               |
+      v               v
+ pinixd runtime    Edge Clips
+ (Bun/TS Clips)    (bb-browserd, devices)
+```
+
+This means the single `run(command)` interface can transparently invoke local commands, remote sandboxes, browser instances, edge devices like iPhones, and third-party services — all through the same text-based interface, all with the same error and metadata semantics. The LLM doesn't need to know which layer it's invoking.
+
+---
+
+## 10. What Reddit Got Right (and Wrong)
+
+The 398-comment thread is itself a valuable dataset on where the AI agent community's intuitions are and aren't calibrated.
+
+**What the community got right:**
+
+- u/johnbbab's summary — "The most powerful agent framework might end up looking exactly like the shell" — is a correct extrapolation of the argument.
+- u/Charming_Support726's connection to CodeAct/smolagents shows the community is tracking the relevant research.
+- u/Loud-Option9008's breakdown of the two-layer architecture as "the most important insight in this post" is accurate.
+- u/sfcl33t's realization that this is "an abstraction layer dressed as CLI syntax the models already know" captures the key insight precisely.
+
+**Where the community pushed back productively:**
+
+- The security concern from u/Time-Dot-1808 is legitimate and led to MorroHsu's most clarifying explanation of the architecture. The misconception that `run(command)` means raw OS shell access is common and worth addressing explicitly.
+- u/Loud-Option9008's concern about container escape vectors is a real production consideration that MorroHsu acknowledged honestly: "I'm not a sandbox security expert... For serious untrusted-input scenarios, [gVisor, Firecracker] is probably the right call."
+- u/complyue's counterargument for structured functions with binary support is a legitimate critique for use cases involving large binary payloads.
+
+**Where the community missed the point:**
+
+- Several commenters fixated on the AI-translated language of the post rather than the ideas, leading to a revealing exchange where MorroHsu wrote in both English and Chinese, ultimately generating the thread's most human moment: *"I feel like the new Chinese exchange student in class who doesn't get the jokes yet 😂"* — before u/rorykoehler responded: *"No need to apologise. This post is one of the best ever on this sub."*
+
+---
+
+## 11. Conclusion: The Convergence Is Real
+
+In 2024, HuggingFace's smolagents team found that code actions outperform function-calling actions by 20-30%. In 2025, Anthropic's Computer Use exposed three minimal primitives rather than a typed API catalog. In late 2025, Meta paid $2 billion for Manus — a team that, according to its own backend lead, was converging on CLI-style interfaces over typed function calls. In early 2026, MorroHsu published the philosophy behind what he built.
+
+These are not coincidences. They are a convergence around a principle that Unix established in 1969: text-based, composable, self-documenting interfaces outperform opaque, typed, monolithic APIs for general-purpose operators — whether those operators are human terminal users or language models.
+
+The specific form that convergence takes will differ by use case. Code execution (CodeAct/smolagents) and CLI commands (agent-clip) both collapse the multi-tool selection problem into a unified action space — they differ in expressiveness versus discoverability. Both are directionally correct.
+
+What's clearly *not* directionally correct is the default pattern that proliferates through most agent frameworks today: a catalog of 10-20 typed JSON Schema tools with full documentation injected into every system prompt, with error handling that drops stderr and returns raw binary data. That pattern was inherited from early API integration designs, not derived from what LLMs actually need.
+
+The failure modes MorroHsu documented — the PNG thrashing, the silent stderr, the context flood — are not edge cases. They are the inevitable result of giving a text-stream operator a binary-structured interface and hoping for the best.
+
+Fifty years ago, the engineers who designed Unix understood that powerful systems need composable, text-based interfaces. LLMs arrived at the same conclusion from first principles. The most durable agent architectures will be the ones that recognize this convergence — and build accordingly.
+
+---
+
+## References
+
+1. **MorroHsu** (2026). *"I was backend lead at Manus. After building agents for 2 years, I stopped using function calling entirely. Here's what I use instead."* r/LocalLLaMA, Reddit. https://reddit.com/r/LocalLLaMA/comments/1rrisqn
+
+2. **MorroHsu** (2026). *"CLI is All Agents Need — Part 2: Misconceptions, Patterns, and Open Questions."* r/LocalLLaMA, Reddit. https://reddit.com/r/LocalLLaMA/comments/1rso48p
+
+3. **MorroHsu / epiral** (2026). *agent-clip: AI Agent as a Pinix Clip.* GitHub. https://github.com/epiral/agent-clip
+
+4. **MorroHsu / epiral** (2026). *Pinix: Clip runtime and routing Hub.* GitHub. https://github.com/epiral/pinix
+
+5. **Wang, X., Chen, Y., Yuan, L., Zhang, Y., Li, Y., Peng, H., & Ji, H.** (2024). *Executable Code Actions Elicit Better LLM Agents* (CodeAct). ICML 2024. arXiv:2402.01030. https://arxiv.org/abs/2402.01030
+
+6. **Roucher, A., Villanova del Moral, A., Wolf, T., von Werra, L., & Kaunismäki, E.** (2025). *smolagents: a smol library to build great agentic systems.* HuggingFace. https://github.com/huggingface/smolagents
+
+7. **Patil, S. G., Zhang, T., Wang, X., & Gonzalez, J. E.** (2023). *Gorilla: Large Language Model Connected with Massive APIs.* arXiv:2305.15334.
+
+8. **CNBC** (2025). *"Meta acquires intelligent agent firm Manus."* https://www.cnbc.com/2025/12/30/meta-acquires-singapore-ai-agent-firm-manus-china-butterfly-effect-monicai.html
+
+9. **TechRadar** (2026). *"Meta buys Manus for $2 billion to power high-stakes AI agent race."* https://www.techradar.com/pro/meta-buys-manus-for-usd2-billion-to-power-high-stakes-ai-agent-race
+
+10. **Ritchie, D. M. & Thompson, K.** (1974). *The UNIX Time-Sharing System.* Communications of the ACM, 17(7), 365–375.
+
+---
+
+*This post was written by a technical research analyst. All Reddit quotes are from the original thread (r/LocalLLaMA/1rrisqn). All code architecture details are sourced directly from the agent-clip and Pinix GitHub repositories. The author has no affiliation with Manus, Meta, or epiral.*

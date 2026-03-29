@@ -1,0 +1,109 @@
+---
+title: "LocalLLaMA Gold: Mining Technical Excellence from the Community"
+description: "A curated series of six deep-dive technical posts extracted from r/LocalLLaMA — from agent architecture philosophy to KV cache optimization, quantization mathematics, and production inference setups."
+pubDate: 2026-03-29
+coverImage: "https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=1200&h=600&fit=crop"
+coverAlt: "Abstract visualization of interconnected nodes representing community knowledge sharing"
+author: "default"
+tags: ["localllama", "series", "llm", "inference", "quantization", "community"]
+draft: false
+---
+
+The r/LocalLLaMA subreddit is a firehose — 666,000 subscribers, thousands of posts per month, a relentless torrent of model releases, benchmark screenshots, and memes. Finding signal in that noise is hard. This series represents my attempt to do exactly that: extract the genuinely valuable technical content from the chaos and present it with the depth and rigor it deserves.
+
+Each post in this series is a forensic reconstruction of a high-value r/LocalLLaMA thread. I read the original posts, followed the comment threads, chased down the GitHub repos, read the ArXiv papers, and synthesized everything into comprehensive technical write-ups. The goal is to preserve and amplify the knowledge that would otherwise be buried in Reddit's ephemeral feed.
+
+---
+
+## The Six Posts
+
+### 1. [Why Function Calling Is Wrong for Agents: Lessons from Manus](/blog/01-manus-function-calling)
+
+A former backend lead at Manus (the AI agent company Meta acquired for $2B) explains why he abandoned typed function calling after two years of production experience. The alternative: a single `run(command="...")` tool with Unix-style commands. The post covers the Unix philosophy alignment, the two-layer architecture (execution vs presentation), production failure stories (the PNG that caused 20 iterations of thrashing, the silent stderr that cost 50 seconds), and the broader convergence happening across the industry toward minimal, composable, text-based interfaces.
+
+**Key insight:** LLMs are text-stream operators, just like Unix was designed for human terminal users 50 years ago. The most durable agent architectures will recognize this convergence.
+
+---
+
+### 2. [The 22% Speedup Hiding in Plain Sight: How Sparse Attention Makes KV Cache Dequantization Free](/blog/02-kv-dequant-optimization)
+
+After 14 failed attempts to optimize TurboQuant dequantization on Apple Silicon, one developer asked the right question: should we dequantize at all? The answer was a 3-line kernel change that skips V dequantization for positions where softmax attention weight is below 10^-6 — which turns out to be ~90% of positions at 32K context. The result: +22.8% decode speed, and surprisingly, *improved* NIAH scores (7/9 → 9/9) because those near-zero positions were adding quantization noise, not signal.
+
+**Key insight:** The biggest optimization wins come from identifying computation that's provably unnecessary, not from making necessary computation faster.
+
+---
+
+### 3. [TurboQuant Explained: The Math Behind the Speedup](/blog/03-turboquant-explained)
+
+Google Research's TurboQuant paper (ICLR 2026) promises 3.5-bit KV cache compression with zero quality loss. But most explanations reduce it to "polar coordinates!!!" which is misleading. This post explains the actual mechanism: the Walsh-Hadamard Transform rotation that spreads energy uniformly across coordinates, the concentration of measure phenomenon in high-dimensional spaces, and why this enables near-optimal scalar quantization without per-block calibration statistics.
+
+**Key insight:** Random rotation before quantization exploits the concentration of measure — in high dimensions, a random point on the unit sphere has its mass nearly uniformly distributed across all coordinates.
+
+---
+
+### 4. [Beyond TurboQuant: Clifford Rotors for KV Cache Compression](/blog/04-rotorquant-clifford)
+
+Within 48 hours of TurboQuant's blog post, a developer replaced its dense d×d rotation matrix with Clifford algebra rotors — achieving 10–19× speedup and 44× fewer parameters while matching attention fidelity. This post is a deep dive into geometric algebra: what Clifford rotors are (the generalization of quaternions), why they need only 4 parameters per 3D rotation block instead of d², and how the block-diagonal structure trades theoretical optimality for practical efficiency.
+
+**Key insight:** For real KV cache vectors (which are not adversarial one-hot vectors), local 3D rotations are sufficient — the model's training dynamics have already decorrelated coordinates enough that global mixing isn't necessary.
+
+---
+
+### 5. [The Free Lunch in LLM Inference: 7 Experiments on Qwen3.5 Quantization](/blog/05-qwen35-quantization-experiments)
+
+A community-requested experiment series on RTX 5080 16GB: Does KV q8_0 actually cost nothing? (Yes, under 0.4% PPL change.) Why did UD-Q4_K_XL perform worse than Q4_K_M? (Misconfigured MXFP4 insertion, fixed same-day by Unsloth.) Does `--fit on` beat manual tuning? (Yes, if you drop the batch flags.) Is MXFP4 worth it on Blackwell? (Not yet — 34% slower.) The post includes the full decision matrix for quantization selection by VRAM tier.
+
+**Key insight:** KV q8_0 is genuinely free at standard contexts, and the difference between a badly-configured and well-configured MoE inference server is 3–10× in speed.
+
+---
+
+### 6. [How to Run 170K Context at 100+ tok/s: A Production Setup Guide](/blog/06-170k-context-production)
+
+Two used RTX 3090s ($800 each on eBay), NVLink, and vLLM with MTP speculative decoding can run Qwen3.5 27B at 100+ tok/s decode with 170K context — a configuration that would have required a $32,000 A100 node two years ago. This post breaks down the hardware, the hybrid Gated DeltaNet architecture (only 25% of layers contribute to KV cache growth), the AWQ BF16-INT4 quantization strategy, the memory math that fits 170K into 48GB, and the full vLLM configuration including Docker Compose.
+
+**Key insight:** The infrastructure story for 100K+ context local inference is no longer "when will hardware get there?" It's "here is the exact command."
+
+---
+
+## Why This Series Exists
+
+r/LocalLLaMA moves fast. A post that gets 2,000 upvotes and 400 comments one week is buried beneath a hundred newer posts the next. The knowledge in those threads — the production failures, the optimization insights, the mathematical explanations — deserves better than Reddit's ephemeral feed.
+
+These posts are my attempt to preserve that knowledge. Each one is:
+- **Sourced from primary materials:** Original Reddit threads, GitHub repos, ArXiv papers, HuggingFace discussions
+- **Technically rigorous:** Equations where they clarify, code where it matters, benchmarks with context
+- **Honest about limitations:** What we don't know, what might break, what remains to be tested
+- **Written for practitioners:** People who will actually run these commands and need to know the gotchas
+
+The LocalLLaMA community is doing genuinely frontier work on local LLM inference. This series is my contribution back: amplifying the signal, preserving the knowledge, and making it accessible to the next wave of builders.
+
+---
+
+## How to Navigate This Series
+
+**If you're building agents:** Start with Post 1 (Manus function calling) for the architectural philosophy, then Post 5 (Qwen3.5 experiments) for practical quantization guidance.
+
+**If you're optimizing inference:** Post 2 (KV dequant) and Post 6 (170K context) are the most directly applicable. Post 4 (RotorQuant) if you want to understand where the field is heading.
+
+**If you want the mathematical foundations:** Post 3 (TurboQuant explained) covers the core theory that underlies both Posts 2 and 4.
+
+**If you just want the commands:** Each post has a "Practical Recommendations" or "Full Configuration" section with copy-pasteable commands.
+
+---
+
+## Acknowledgments
+
+These posts would not exist without the r/LocalLLaMA community — specifically:
+- **u/MorroHsu** for the Manus function calling post and open-sourcing agent-clip/Pinix
+- **u/Pidtom** (Tom Turney) for the KV dequant optimization and exhaustive documentation
+- **u/-p-e-w-** for the TurboQuant explanation and the Heretic censorship removal tool
+- **John D. Pope** for RotorQuant and the geometric algebra implementation
+- **u/gaztrab** for the Qwen3.5 experiment series and reproducible benchmarking
+- **u/JohnTheNerd3** for the 170K context setup and detailed vLLM configuration
+- The hundreds of commenters in each thread who asked hard questions, caught bugs, and pushed for deeper rigor
+
+The culture of r/LocalLLaMA — "growing up on the early internet where knowledge is shared for free" — made this series possible. I'm grateful to be able to amplify it.
+
+---
+
+*This series was written in March 2026. All benchmark numbers, model versions, and software versions are accurate to that timeframe. The field moves fast — verify current versions before deploying.*

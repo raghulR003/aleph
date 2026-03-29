@@ -1,0 +1,436 @@
+---
+title: "The 22% Speedup Hiding in Plain Sight: How Sparse Attention Makes KV Cache Dequantization Free"
+description: "After 14 failed attempts to optimize dequantization, one developer asked the right question: should we dequantize at all? The answer was a 3-line kernel change that improved speed and quality simultaneously."
+pubDate: 2026-03-29
+coverImage: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=1200&h=600&fit=crop"
+coverAlt: "Abstract data visualization showing sparse matrix patterns and computational graphs"
+author: "default"
+tags: ["kv-cache", "quantization", "turboquant", "optimization", "llm", "apple-silicon"]
+draft: false
+series: "LocalLLaMA Gold"
+seriesOrder: 2
+---
+
+*March 29, 2026 · 18 min read*
+
+---
+
+> **"After 14 failed attempts to make dequantization faster, I finally asked the right question: should we dequantize at all?"**
+>
+> — u/Pidtom (Tom Turney), r/LocalLLaMA
+
+There's a certain class of optimization insight that feels simultaneously obvious and profound. You've been staring at the problem from the wrong angle, grinding against a hardware wall, and then — without any new hardware, any new math, or any new model — you shift perspective by 90 degrees and the wall dissolves.
+
+This is one of those stories. It involves a Google Research paper on extreme KV cache compression, an open-source implementer on Apple Silicon, 14 exhaustive failed experiments, a 3-line kernel change, and a 22.8% speedup that also *improved* retrieval quality. It became one of the most upvoted posts in r/LocalLLaMA history and triggered a community-wide conversation about what else we're computing needlessly.
+
+Let's reconstruct the journey from the ground up.
+
+---
+
+## Part 1: The Foundation — What is TurboQuant?
+
+To understand the optimization, we first need to understand the underlying compression it sits on top of.
+
+On April 28, 2025, Google Research submitted [arXiv:2504.19874](https://arxiv.org/abs/2504.19874) — *"TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate"* by Amir Zandieh, Majid Daliri, Majid Hadian, and Vahab Mirrokni. The paper was presented at ICLR 2026, with the accompanying Google Research blog post going live on March 24, 2026.
+
+The core problem TurboQuant addresses is the **KV cache memory bottleneck**. During autoregressive generation, transformers must store key-value pairs for every token in context. At 32K context length with a 35B model, this is a significant fraction of available GPU/unified memory. Traditional quantization methods (q4_0, q8_0) use scalar quantization with stored normalization constants — which introduces its own memory overhead of 1–2 bits per value, partially defeating the purpose of compression.
+
+TurboQuant's solution is elegant in two stages:
+
+**Stage 1 — PolarQuant:** Instead of applying quantization directly to raw values, TurboQuant first applies a **Walsh-Hadamard Transform (WHT)** — a randomized rotation that spreads the energy uniformly across all coordinates, inducing a near-Gaussian distribution. Once Gaussianized, the coordinates follow a known analytical distribution, so optimal scalar quantizers can be applied per-coordinate *without* needing to store calibration statistics. The rotation eliminates memory overhead. The polar angle encoding (hence "PolarQuant") replaces Cartesian coordinates with angle+radius, enabling a fixed codebook without per-block normalization parameters.
+
+**Stage 2 — QJL (Quantized Johnson-Lindenstrauss Transform):** The MSE-optimal quantizer from Stage 1 is unbiased for squared error but biased for inner products — exactly what attention computations need. TurboQuant uses 1 bit of residual budget to apply a QJL transform on the remaining error, creating an **unbiased inner product estimator**. The 1-bit sign correction costs almost nothing in memory but eliminates a systematic bias that would otherwise accumulate across attention layers.
+
+The result: **3.5 bits per channel (turbo3)** achieves absolute quality neutrality on long-context benchmarks including LongBench, NIAH, ZeroSCROLLS, RULER, and L-Eval. That's a **4.6× compression** over fp16. The paper also proves information-theoretic lower bounds, showing TurboQuant is within a constant factor (~2.7×) of the theoretical optimum.
+
+When the blog post dropped on March 24, 2026, the MLX community immediately started implementing it. MLX developer Prince Canuma [@Prince_Canuma](https://x.com/Prince_Canuma) had a prototype running within 24 hours. The financial press reacted with characteristic overconfidence — headlines from Ars Technica ("Google's TurboQuant AI-compression algorithm can reduce LLM memory usage by 6x"), CNBC, and Yahoo Finance triggered a sell-off in SK Hynix, Micron, and Sandisk stocks, confusing KV cache-specific compression with total model compression. (The memory chip stocks recovered.)
+
+Meanwhile, on the llama.cpp side, a community discussion thread ([#20969](https://github.com/ggml-org/llama.cpp/discussions/20969)) opened, and one independent implementer — Tom Turney, GitHub: @TheTom — had already been working on a full implementation for weeks.
+
+---
+
+## Part 2: The Wall — 14 Approaches That Failed
+
+Tom Turney's implementation, documented at [github.com/TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus), got TurboQuant working end-to-end on Apple Silicon Metal with llama.cpp. The implementation achieved something remarkable: **q8_0 prefill speed parity** — turbo3 at 2747 tok/s versus q8_0's 2694 tok/s at 512-token context, because the smaller compressed cache needs less memory bandwidth during prefill.
+
+But decode was another story.
+
+During autoregressive decoding — generating one token at a time — the GPU needs to load and dequantize the *entire* KV cache for every new token. At 32K context on M5 Max, profiling revealed a brutal fact: **dequantization alone was consuming ~40% of decode time.**
+
+The no-dequant performance ceiling (measured by running the compressed cache with a zero-op dequant) was 78.3 tok/s. The actual dequant performance was 47.0 tok/s. q8_0 was 61.0 tok/s. The compressed cache — which uses *less* memory bandwidth — was somehow *slower* because the TurboQuant dequantization was expensive enough to overcome the bandwidth advantage.
+
+There was also a hardware generation divide. On M5 Max, the performance gap was meaningful but manageable. On M2 Pro (Apple8), the gap was severe: 10.95 tok/s (45% of ceiling) versus a theoretical ceiling of 24.5 tok/s. The ceiling was *faster* than q8_0 (22.1 tok/s) because turbo3's compressed format requires less memory bandwidth. But dequant was eating all the advantage and more.
+
+The root cause: turbo3 dequantization requires an 8-entry centroid lookup table (LUT) stored in Metal `constant` memory. Each element in a 32-thread simdgroup may access a different LUT entry — a "divergent access" pattern that older hardware handles poorly. On M5 Max with its modern constant cache, this costs ~14% of decode time. On M2 Pro, the older cache serializes divergent accesses: the same LUT costs ~25% — 2× worse.
+
+Tom systematically documented every approach tried over two days of experiments, ultimately testing **20 distinct dequant-level optimizations**. Here are the 14 most relevant, from the paper:
+
+| # | Approach | M2 8K tok/s | Result |
+|---|---|----------|-------------|--------|
+| 1 | **4-mag LUT + XOR sign** | **15.1** | **Best: +38% (halves constant addresses)** |
+| 2 | Batched byte extract | 13.7 | Better reading, still 8 LUT addresses |
+| 3 | Inline block dequant | 13.5 | I-cache pressure |
+| 4 | 2-pair half2 LUT | 12.0 | Ternary overhead > LUT savings |
+| 5 | Select chain (zero LUT) | 11.9 | Too much ALU |
+| 6 | Bit-arithmetic | 11.6 | Pure ALU, zero memory — still too slow |
+| 7 | Non-vec FA (nl=2) | 10.2 | Wrong kernel for single-token decode |
+| 8 | float cn[8] registers | — | Metal spills to thread stack (M5 only) |
+| 9 | half cn[8] registers | — | Also spills (M5 only) |
+| 10 | Split 2×4 half LUT | — | Branch overhead (M5 only) |
+| 11 | Deferred norm multiply | 12.9 | Loses instruction-level parallelism |
+| 12 | FMA branchless | 11.4 | 7 ALU ops > 1 divergent constant read |
+| 13 | simd_shuffle cross-lane | 14.7 | Cross-lane latency ≈ constant LUT |
+| 14 | Fused block dot product | 8.1 | 64 float comparisons: worst result of all |
+
+The final experiment — a fully fused block dot product that precomputes `Q·centroid` tables — was catastrophically bad: 8.1 tok/s, the worst result of 14 attempts. Iterating over 4 centroid values and accumulating matching Q elements required 64 float comparisons per dequant call. On Apple Silicon GPU, these compile to branches, not predicated moves like CUDA.
+
+The meta-lesson emerged from experiment #20: a pure ALU implementation with *zero* constant memory reads ran at the same speed as the 4-mag LUT. The constant memory wasn't actually the bottleneck after all. The bottleneck was **device memory bandwidth** — streaming 14 bytes per 32-element turbo3 block (norm + quantization indices + sign bits) from DRAM. The LUT reads were hitting L1 cache and costing essentially nothing. The real cost was the WHT extraction + centroid lookup + norm multiply per element versus q8_0's trivial `int8 * scale`.
+
+From the hardware analysis document: *"The bottleneck is NOT constant memory LUT divergence. The bottleneck IS device memory bandwidth for streaming quantized KV blocks from DRAM, and dequant ALU complexity (WHT extraction + centroid + norm vs q8_0's simple int8 * scale). These two costs are inherent to the turbo format and cannot be optimized away without changing the format itself."*
+
+**Apple Silicon hardware truth from 14 experiments:**
+1. 1 divergent constant read < 7 ALU ops, even with `fma()`
+2. Metal compiles ternaries to branches — not predicated moves like CUDA
+3. Branches cost MORE than divergent constant reads (opposite of CUDA)
+4. Array indexing always spills Metal's smaller register file
+5. 4 constant addresses is the sweet spot; fewer adds branches, more adds thrashing
+6. Per-element norm multiply provides ILP — hides constant memory latency
+
+The 4-mag LUT was the best achievable dequant-level optimization: 62% of the theoretical ceiling on M2 Pro, still leaving a 38% gap. With 20 approaches tested across two Apple Silicon generations, the verdict was clear: **you cannot beat the hardware floor by cleverness.**
+
+---
+
+## Part 3: The Insight — Asking the Wrong Question
+
+Tom's description of the breakthrough, from the r/LocalLLaMA comments:
+
+> *"I was head banging on the M2 Pro trying to squeeze out any gains, tried every trick I could think of. Register LUTs, SIMD shuffles, bit arithmetic, fused blocks, branchless math (lots of parsing through papers). 14 approaches, none of them moved the needle. The constant memory LUT on Apple Silicon is just at the hardware floor. You can't beat 4 divergent reads with any amount of ALU cleverness.*
+>
+> *Then I looked at it differently: the problem isn't how fast you dequant, it's how many positions you're dequanting that don't matter. Softmax already tells you which positions are worthless before you touch V. At 32K context 90%+ of them are near zero. Skip those and you're done."*
+
+The key insight is in the flash attention computation graph. The attention mechanism computes:
+
+$$O = \text{softmax}\left(\frac{QK^T}{\sqrt{d}}\right) \cdot V$$
+
+In flash attention's fused kernel, this happens in two distinct phases for each tile of KV positions:
+
+1. **K phase:** Dequantize K, compute $QK^T$ scores, update running softmax normalization
+2. **V phase:** Using the computed attention weights $\alpha_i$, dequantize V, accumulate weighted sum $\sum_i \alpha_i V_i$
+
+**The attention weights are known before V dequantization begins.** Flash attention already has the softmax distribution when the V phase starts. For positions where $\alpha_i \approx 0$, the contribution to the output is $\alpha_i \cdot V_i \approx 0$ regardless of $V_i$'s value.
+
+The question shifts from "how do we make each dequant operation cheaper?" to "which dequant operations can we skip entirely?"
+
+---
+
+## Part 4: The Math — Why 90% of Positions Don't Matter
+
+The behavior of softmax under long contexts is well-understood in the attention literature and is the same phenomenon exploited by KV cache eviction methods like H2O (Heavy-Hitter Oracle) and SnapKV. But rather than evicting (losing those tokens forever), Sparse V just skips computing their contribution while keeping them in the cache.
+
+For a sequence of length $n$ with attention scores $s_1, s_2, ..., s_n$, the softmax distribution is:
+
+$$\alpha_i = \frac{e^{s_i}}{\sum_j e^{s_j}}$$
+
+The key property: softmax is a **heavy-tailed distribution** where most probability mass concentrates on a small number of "winner" positions. The tail falls off exponentially. At a context length of $n = 32{,}768$ tokens, a position with attention score just 13.8 points below the maximum gets a weight of $e^{-13.8} \approx 10^{-6}$ — below the skip threshold.
+
+Direct empirical measurement (using `output_attentions=True` on Qwen3-1.7B to count weights below the threshold $\tau = 10^{-6}$):
+
+| Context Length | Overall Skip Rate | Max (Single Layer) |
+|----------------|-------------------|--------------------|
+| 512 tokens | 9.1% | 32.1% |
+| 2,048 tokens | 20.7% | 59.5% |
+| 4,096 tokens | 28.4% | 72.4% |
+
+At 32K context (estimated from decode speed improvements): **~90% skip rate.**
+
+This sparsity scales super-linearly with context length. The longer the conversation, the more positions the model has learned to ignore. Early layers show higher skip rates (broad attention patterns across the sequence), while later layers are more focused (concentrated on relevant tokens). The "long-tail" positions — those with weights below $10^{-6}$ — represent a vanishingly small contribution to the output. They're not signal; they're the numerical residue of the softmax operation on distant, irrelevant tokens.
+
+Here's the crucial point: **for any position where $\alpha_i < \tau = 10^{-6}$, the contribution $\alpha_i \cdot \text{dequant}(V_i)$ to the output vector is smaller than single-precision floating-point numerical noise.** You aren't losing information by skipping those positions — you're removing contributions that literally cannot be represented in fp32.
+
+And there's a worse-is-better property: those negligible positions aren't contributing *zero* signal; they're contributing *quantization noise*. When you dequantize a compressed value, you introduce a small error $\epsilon$. For a position with weight $\alpha_i = 10^{-8}$, the contribution is $10^{-8} \cdot (\text{true value} + \epsilon)$. The true value contribution is negligible. But the error $\epsilon$ is the same magnitude as for any other position — it doesn't scale with $\alpha_i$. So those negligible-weight positions are adding pure quantization noise to the output. Removing them **cleans** the signal.
+
+This is why NIAH improved.
+
+---
+
+## Part 5: The Implementation — A 3-Line Kernel Change
+
+The actual implementation, from the paper's Method section, is disarmingly simple. Inside the Metal flash attention kernel's V accumulation inner loop:
+
+```metal
+// BEFORE: Unconditional dequant + accumulate for every position
+FOR_UNROLL (short cc = 0; cc < C/NE; ++cc) {
+    // ... V dequant and accumulation (always runs) ...
+}
+
+// AFTER: Attention-gated dequant (sparse V)
+FOR_UNROLL (short cc = 0; cc < C/NE; ++cc) {
+    const float attn_weight = float(ss[NE*cc + ty]);
+    if (attn_weight < 1e-6f) continue;  // ← THE CHANGE
+
+    // ... V dequant and accumulation (skipped for ~90% of positions at 32K) ...
+}
+```
+
+Three effective lines of change. One float read from the already-computed softmax array `ss[]`, one comparison, one `continue`. No new state. No model changes. No calibration. No retraining. The softmax weights `ss[]` are already sitting in registers from the K phase — this read costs essentially nothing.
+
+The resulting kernel behavior: at short context (512 tokens, 9% skip rate), this change is nearly a no-op. The branch condition rarely triggers. At 32K context (90%+ skip rate), the inner loop body runs for fewer than 1 in 10 iterations. The entire V dequantization pipeline — WHT extraction, centroid LUT lookup, sign application, norm multiplication — is bypassed for ~90% of positions.
+
+**Threshold selection:** The threshold $\tau = 10^{-6}$ was chosen conservatively and validated across a sweep from $10^{-4}$ to $10^{-8}$. All thresholds produce identical perplexity. The behavior is qualitatively robust: a position contributing $10^{-6}$ of the output can move the logit by at most $10^{-6} \times \|V\|$, which is far below numerical significance in fp32. The threshold is effectively detecting "positions the model has decided to ignore" and making the kernel respect that decision.
+
+**Why this works when 14 other approaches failed:** All 14 previous optimizations attacked the same constraint — making individual dequant operations cheaper. Sparse V changes the problem entirely:
+
+- Dequant optimization: Make each of N operations faster → bounded by hardware floor
+- Sparse V: Eliminate $(1-p) \times N$ operations entirely → unbounded improvement as context grows
+
+At 32K with $p \approx 0.9$, eliminating 90% of V dequant work saves approximately half the total dequant cost (since dequant splits roughly 50/50 between K and V paths). The remaining K dequant still runs for all positions — K must be fully processed to compute the attention scores that gate V.
+
+---
+
+## Part 6: The Results — Numbers That Surprised Even the Author
+
+The performance results, measured on Apple M5 Max (128GB unified memory, 546 GB/s bandwidth) with Qwen3.5-35B-A3B (35B MoE model), turbo3 KV cache:
+
+| Context Depth | Without Sparse V | With Sparse V | Improvement | vs q8_0 baseline |
+|---------------|-----------------|---------------|-------------|-------------------|
+| Short (tg128) | 76.5 tok/s | 77.6 tok/s | +1.4% | 0.899× |
+| 4K | 72.0 tok/s | 74.9 tok/s | +4.0% | — |
+| 8K | 66.9 tok/s | 71.7 tok/s | +7.2% | — |
+| 16K | 58.9 tok/s | 66.5 tok/s | +12.9% | 0.923× |
+| **32K** | **47.0 tok/s** | **57.7 tok/s** | **+22.8%** | **0.931×** |
+
+At 32K context, turbo3 with sparse V reaches 93% of q8_0 decode speed — while storing the KV cache at 3.5 bits instead of 8.5 bits, a 4.6× compression advantage. From the 0.76× ratio without sparse V to 0.93× with it, the optimization closed a significant fraction of the remaining performance gap without touching compression or model quality.
+
+The benefit scales exactly as the theory predicts: more context → more sparsity → larger gains. The optimization is most valuable precisely where the bottleneck is worst.
+
+**Quality validation** was rigorous and included strong pushback from the community (notably user u/FullOf_Bad_Ideas), leading to increasingly thorough testing:
+
+- **Perplexity (wikitext-103, 32K, 50 chunks):** turbo3 sparse V OFF: 7.1796 ± 0.021. turbo3 sparse V ON: 7.1796 ± 0.021. **Delta: 0.0000.** The confidence interval (±0.021) is tight enough to detect ~0.5–1% shifts. None were observed.
+- **8K, 16K, 32K contexts:** PPL delta is exactly 0.0000 at every length tested, with both WikiText-2 (5 runs) and WikiText-103 (50 chunks).
+- **KL Divergence vs f16:** turbo3 KLD is 0.01614 (MoE) vs 0.00809 (q4_0). This is the underlying compression cost — sparse V adds nothing to it.
+
+**Generality across KV formats:**
+
+| Format | PPL Δ (ON vs OFF) | NIAH Δ | Decode Δ |
+|--------|-------------------|--------|----------|
+| q8_0 (8-bit) | 0.0000 | identical | +5.0% |
+| q4_0 (4-bit) | 0.0000 | identical | within noise |
+| turbo3 (3.5-bit WHT+polar) | 0.0000 | improved (7/9 → 9/9) | **+22.8%** |
+
+Sparse V is validated on q8_0 and q4_0 as well — it's not a TurboQuant-specific trick. On q8_0, it yields a clean 5% decode speedup with zero quality impact. On q4_0, the gain is within noise because q4_0's per-position dequant is cheap (simple scale+offset); there's less compute to save. The attention sparsity is identical in all cases — the benefit scales with how expensive each skipped dequant would have been.
+
+---
+
+## Part 7: The Surprising Result — NIAH Goes 7/9 → 9/9
+
+The Needle-In-A-Haystack (NIAH) benchmark, originally developed by Greg Kamradt ([github.com/gkamradt/LLMTest_NeedleInAHaystack](https://github.com/gkamradt/LLMTest_NeedleInAHaystack)), tests whether a language model can retrieve a single specific fact buried at various depths within a long document. The setup:
+
+- **Haystack:** A large body of text (e.g., news articles, technical documents) filling the model's context window
+- **Needle:** A single specific fact (e.g., "The magic word is 'pineapple pizza'") placed at a controlled depth (0%–100% through the document)
+- **Query:** "What is the magic word?" or equivalent retrieval question
+- **Evaluation:** Does the model return the correct needle?
+
+The test is run across a grid of context lengths (4K, 8K, 16K, 32K) × depth positions (0%, 25%, 50%, 75%, 100%), creating a two-dimensional heatmap of retrieval reliability. Models often fail at specific depth×length combinations, revealing where attention degrades.
+
+In this evaluation (Qwen3.5-35B-A3B, M5 Max, NVIDIA RULER methodology):
+
+| Configuration | Single Needle Score |
+|---------------|---------------------|
+| q8_0 (baseline) | 7/9 |
+| turbo3 (no sparse V) | 7/9 |
+| **turbo3 + sparse V** | **9/9 (100%)** |
+
+Two tests that both q8_0 and turbo3 failed — retrievals at specific depth×context combinations — are now *passing* with sparse V enabled. The optimization didn't just avoid hurting retrieval; it made retrieval better.
+
+The mechanism is exactly what the math predicts. A needle token at position $k$ has a high attention weight $\alpha_k$ when the query is about it — that's how retrieval works. The needle's weight is well above $10^{-6}$ and is never skipped. What sparse V removes is the contribution of thousands of other "hay" tokens with weights near zero — which in a quantized system are adding quantization noise, not signal.
+
+From the paper: *"Each negligible-weight position contributes near-zero useful signal but potentially non-zero quantization noise. Sparse V removes these contributions entirely, which appears to improve the signal-to-noise ratio of the attention output in this setup."*
+
+Community commenter u/Tatrions captured it well: *"The near-zero positions weren't just wasted bandwidth, they were actively injecting quantization noise into the output. Removing them didn't just speed things up, it made the result cleaner. Makes you wonder how many other places in the inference pipeline we're doing work that is net negative for quality rather than just neutral."*
+
+This is a genuine surprise: a pure performance optimization that also improves quality. Not because the model is better, but because what's being removed is worse-than-nothing.
+
+---
+
+## Part 8: The Ecosystem — Community Extensions and Hardware Frontier
+
+The Reddit thread generated immediate community action:
+
+**CUDA front:** User u/sabotage3d stress-tested the CUDA branch on an RTX 3090, discovered a critical issue: the CUDA implementation had a "shadow buffer" that would transiently expand 3-bit compressed data to fp16 during dequantization — inflating 900MB of turbo3 KV cache to 18-20GB, causing OOM on 24GB cards. The sparse V optimization is the key to fixing this on consumer hardware: by skipping dequantization for 90% of positions, most of that inflation never happens. A separate CUDA-focused fork by @spiritbuun ([github.com/spiritbuun/llama-cpp-turboquant-cuda](https://github.com/spiritbuun/llama-cpp-turboquant-cuda)) addressed the CUDA path, achieving 97.5% of q8_0 decode speed on Nvidia by using register LUTs — something that works on CUDA's 255-register-per-thread limit but spills on Metal's smaller register file.
+
+After using spiritbuun's fork, u/sabotage3d reported: *"Just pushed Qwen 3.5 27B to 126K context on a single RTX 3090 and it's actually working. Total VRAM stayed locked around 20GB even with 2.5GB of system overhead. Prompt eval: 727.70 t/s. Gen eval: 15.24 t/s."* Running 126K context on 24GB VRAM with a 27B model. That's the compression benefit manifest.
+
+**vLLM front:** User u/One_Temperature5983 (working on `turboquant-vllm`, v1.0.0 on PyPI) reported independently discovering the same dequant bottleneck in their Triton/Python implementation, solving it differently (incremental dequantization — only dequanting the new token each step). They noted that sparse V and incremental dequant would stack: incremental handles the K path, sparse V handles V. They also flagged fp16 norms as a quality trap — fp16 precision compounds across layers at long context, flipping logits; fp32 norms fixed this.
+
+**Related work — RotorQuant:** A parallel community project, RotorQuant ([github.com/scrya-com/rotorquant](https://github.com/scrya-com/rotorquant)), reimagines TurboQuant's random orthogonal rotation matrix using **Clifford algebra rotors** from Cl(3,0) — achieving 10–19× faster rotation than TurboQuant's WHT with 44× fewer parameters, while maintaining comparable attention fidelity (cosine similarity 0.990 vs TurboQuant's 0.991). Tom is in communication with the RotorQuant team; sparse V is orthogonal to the rotation scheme and can be applied on top of either.
+
+**Scale effects:** The paper and community MLX results (Prince Canuma's implementation) suggest the sparsity keeps climbing through 64K and 128K. The original r/LocalLLaMA post asked whether sparsity plateaus at 64K+. Tom's answer: *"Sparsity should keep climbing since softmax concentrates on fewer positions as context grows. We've validated through 32K, Prince Canuma's MLX impl got perfect NIAH at 64K, and the paper goes to 128K... the skip ratio only gets better."*
+
+---
+
+## Part 9: Technical Deep-Dive — The Architecture of Attention Sparsity
+
+Why does attention become sparser at long context? This is fundamental to transformer behavior and connects to the theory behind related work like H2O ([arXiv:2306.14048](https://arxiv.org/abs/2306.14048)) and SnapKV.
+
+In a trained transformer, the attention mechanism learns to be *selective*. Each query vector attends strongly to the KV positions that are semantically relevant and weakly (near-zero) to positions that aren't. At short context (512 tokens), "near-zero" is relative — even the 10th most attended position might have a meaningful weight. But at 32K tokens, the *absolute* weight of most positions decreases even if the relative ranking is similar.
+
+The math: Softmax is a normalization operation. $\sum_i \alpha_i = 1$. At $n = 32{,}768$ positions, the average weight is $1/32768 \approx 3 \times 10^{-5}$. Positions that are semantically irrelevant get weights well *below* average. With the threshold set at $\tau = 10^{-6}$, we're skipping positions with weight less than 3% of the average — genuinely negligible contributions.
+
+There's also an architectural reason sparse V works better on **MoE models** than dense models. In a MoE architecture like Qwen3.5-35B-A3B, only a subset of experts activate per token, meaning the FFN computation is more efficient (only active experts run). Attention, however, is always full-rank — it processes all KV positions. This makes attention a *larger fraction* of total decode time in MoE vs dense models. Sparse V's gains on attention therefore show up more prominently in MoE benchmarks (+22.8% for 35B-A3B vs +1.8% for 27B dense at 16K).
+
+The community observation that's most worth emphasizing: **this is the same phenomenon exploited by token eviction schemes (H2O, SnapKV), but with a completely different tradeoff.** Eviction permanently removes tokens from the cache — you gain speed but lose context. Sparse V keeps the tokens in memory (compressed), skips their dequantization when their attention weight is negligible, and uses them when they matter again. If a position that was negligible in layer 15 becomes important in layer 16, it's still there. The full context window is preserved.
+
+This distinction was flagged by u/papertrailml: *"What's cool about this is it exploits the same attention concentration phenomenon that H2O, SnapKV, etc. all exploit for KV cache eviction — but instead of discarding tokens, you just skip the expensive work for them. Keeps the full context window intact while getting most of the efficiency benefit. Very different tradeoff than eviction-based approaches where you permanently lose context."*
+
+---
+
+## Part 10: Implications — What Else Are We Computing That We Could Skip?
+
+The Sparse V discovery is an instance of a broader pattern that keeps appearing in ML inference optimization: **the biggest wins come from identifying computation that's provably unnecessary, not from making necessary computation faster.**
+
+This is analogous to:
+- **Speculative decoding** — don't run the full model when a draft model's prediction is likely correct
+- **Early exit** — don't run later transformer layers when the answer is already confident
+- **KV cache eviction** — don't store tokens the model will never strongly attend to
+- **Mixture-of-Experts routing** — don't activate experts that aren't relevant to this token
+
+Sparse V adds to this list: **don't dequantize V values whose attention weight makes their contribution numerically irrelevant.**
+
+The attention-gated computation principle extends naturally. The same `ss[]` array (softmax weights) that gates V dequantization could gate other expensive downstream operations:
+
+1. **Tile-level V skip:** Instead of checking per-position, check if the entire tile has max weight below $\tau$ using `simd_max(ss)`. Skip the whole tile's loop. (Tested in the turboquant_plus repo — marginal on MoE at +0.6-0.9%, negative on dense models due to tile scan overhead. Not yet worth the complexity.)
+
+2. **Softmax exp() early exit:** Before computing `exp(s - M)`, check if `s - M < -20`. If so, the result is $\approx 2 \times 10^{-9}$, skip the expensive GPU `exp()`. Remains on the roadmap.
+
+3. **Sparse K dequant (future):** After a first pass with approximate attention scores, skip K dequant for positions estimated to be below threshold. Requires two-pass attention — more complex, but the potential gains are twice as large.
+
+4. **Hybrid precision:** For the ~10% of positions with meaningful attention weights, use higher-precision dequantization. For the 90%, the current skipping is already optimal.
+
+The deeper question u/ExplorerPrudent4256 raised in the thread: *"The pattern here is exactly what you see across ML optimization in general: the biggest gains come not from making computations faster but from skipping unnecessary work entirely. NIAH improving from 7/9 to 9/9 is the kicker. Those near-zero positions were adding quantization noise, not signal. Makes me wonder what other places in typical inference pipelines have similar free wins hiding in plain sight."*
+
+We don't know the answer to that. But the framework is clear: find where the model has already told you the answer (the attention distribution is a signal you computed anyway), and use that signal to gate expensive downstream work.
+
+---
+
+## Part 11: Status, Roadmap, and How to Try It
+
+The current implementation state as of March 2026:
+
+**Metal (Apple Silicon):** Production-ready. `--cache-type-k turbo3 --cache-type-v turbo3` works on M1/M2/M3/M4/M5 hardware via llama.cpp's Metal flash attention kernels. Sparse V is enabled by default. The 4-mag LUT is auto-detected for pre-M5 hardware (+38–45% on M2 Pro). 511+ Python tests with 100% code coverage.
+
+**CUDA (NVIDIA):** Partial via @spiritbuun's fork ([github.com/spiritbuun/llama-cpp-turboquant-cuda](https://github.com/spiritbuun/llama-cpp-turboquant-cuda)). 126K context on RTX 3090 validated. Sparse V not yet ported to the CUDA path — on the roadmap. The CUDA fork uses register LUTs (255 registers/thread) for 97.5% of q8_0 decode.
+
+**Upstream PR:** Preparation underway ([issue #27](https://github.com/TheTom/turboquant_plus/issues/27)). The goal is merging into mainline llama.cpp, which would make it available in LM Studio, KoboldCPP, and eventually Ollama.
+
+**To try it now:**
+
+```bash
+# Clone the llama.cpp fork with TurboQuant support
+git clone https://github.com/TheTom/llama-cpp-turboquant.git
+cd llama-cpp-turboquant
+git checkout feature/turboquant-kv-cache
+
+# Build with Metal (Apple Silicon)
+cmake -B build -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON \
+      -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
+
+# Run with TurboQuant KV cache (sparse V enabled by default)
+./build/bin/llama-server \
+  -m models/your-model.gguf \
+  -ngl 99 -c 32768 -fa on \
+  --cache-type-k turbo3 --cache-type-v turbo3 \
+  --host 0.0.0.0 --port 8080
+```
+
+The companion Python prototype (511 tests, NumPy-only, validates the paper's math without needing llama.cpp):
+
+```bash
+git clone https://github.com/TheTom/turboquant_plus.git
+cd turboquant_plus
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+python3 -m pytest tests/ -v  # should print "511 passed"
+python3 benchmarks/demo.py   # quick compression demo, no model needed
+```
+
+---
+
+## Part 12: The Full Picture — Benchmarks, Tradeoffs, and Honest Assessment
+
+This section would be incomplete without addressing the legitimate criticisms raised in the thread.
+
+**The KLD question:** u/FullOf_Bad_Ideas correctly flagged that turbo3 KLD (0.0161 vs f16 on MoE) is worse than q4_0 (0.0081) despite using fewer bits. This surprised some readers who expected TurboQuant's theoretical optimality to translate to better real-world divergence than simpler scalar quantization. The explanation: turbo3 uses 3.5 bits while q4_0 uses 4.5 bits (with the stored normalization constant). At a lower total bit budget, higher KLD is expected regardless of the quantization scheme's theoretical elegance. turbo3 is near-optimal for 3.5 bits; q4_0 is near-optimal for 4.5 bits. More bits = less divergence. The theoretical bound improvement from TurboQuant shows up at fixed bit rates when compared to other 3.5-bit schemes, not necessarily against different-bit-rate baselines.
+
+**The PPL validation debate:** The original validation used too few chunks (2–8) at 512 context to be statistically meaningful. Under persistent community pressure, Tom ran progressively more rigorous tests, ultimately reaching 50-chunk wikitext-103 at 32K context — sufficient statistical power (CI ±0.021) to detect 0.5% differences. The result held at every scale: sparse V ON/OFF delta = 0.0000.
+
+**Dense vs MoE:** On dense models (Qwen3.5-27B), sparse V gains are small (+0.7% to +1.8%). In dense architectures, FFN computation dominates decode time (every parameter activates every token), making attention a small fraction. Sparse V's 22.8% gain on attention doesn't move the needle much when attention is 5% of total compute. MoE is the sweet spot: attention is a larger fraction because only active experts run.
+
+**Real-world server vs synthetic benchmarks:** The paper honestly distinguishes between `llama-bench` (synthetic, GPU maximally saturated) and `llama-server` (real HTTP API, system overhead). In a real-world 70-page PDF → chat server scenario at ~24K context, decode is 53.3 tok/s with sparse V vs 68.2 tok/s for q8_0 — 78% efficiency, not the 93% shown in kernel-level benchmarks. HTTP overhead, templating, and scheduling consume the gap. Users should expect the 78% figure in actual use, not 93%. Without sparse V, the number would be closer to 60%.
+
+**Summary table — turbo3 vs q8_0 at 32K (M5 Max):**
+
+| Metric | q8_0 | turbo3 + sparse V | Notes |
+|--------|------|-------------------|-------|
+| KV memory | 8.5 bits/val | 3.5 bits/val | 4.6× compression |
+| Prefill speed | 1098 tok/s | 1204 tok/s | +10% (less bandwidth) |
+| Decode speed (kernel) | 61.0 tok/s | 57.7 tok/s | 0.93× |
+| Decode speed (server) | 68.2 tok/s | 53.3 tok/s | 0.78× |
+| Perplexity vs q8_0 | baseline | +1.06% | At 32K, 50 chunks |
+| NIAH single needle | 7/9 | 9/9 | Improved |
+| NIAH multi-key | 4/4 | 4/4 | Identical |
+| KL divergence vs f16 | 0.00155 | 0.01615 | 10× higher (fewer bits) |
+
+The honest summary: if you have 128GB of unified memory and are running large models at long context, turbo3 + sparse V is a compelling option — you get significantly more context window for the same memory, at ~93% of q8_0 decode speed in kernel benchmarks (78% in real server use), with a 1% perplexity cost that's invisible in most practical applications. If you have 24GB and need 126K context on a 27B model, as u/sabotage3d demonstrated, turbo3 is the only option that fits.
+
+---
+
+## Conclusion: The 3-Line Generalization
+
+Tom Turney summarized the insight perfectly in the paper's conclusion:
+
+> *"Making N dequant operations faster is bounded by hardware limits; eliminating $(1-p) \times N$ of them entirely is not. After 14 failed attempts to optimize the dequant instruction itself, sparse V succeeds by changing the question from 'how do we dequantize faster?' to 'should we dequantize at all?'"*
+
+The optimization is a 3-line kernel change. It exploits information the kernel already has. It requires no model changes, no retraining, no calibration data. It is valid for any quantized KV cache scheme where flash attention is used. It becomes more effective exactly where the performance bottleneck is worst — at long context. And in a surprise result, it improves retrieval quality by removing quantization noise from positions that were contributing negative signal.
+
+But the deeper lesson isn't about dequantization. It's about the difference between optimizing within a problem and questioning whether the problem needs to be solved at all. 14 attempts to make dequantization faster. One step back to ask: for which positions does dequantization matter?
+
+The attention weights are computed before V is accessed. They've been telling you which positions matter for the entire history of transformer inference. We just weren't using that signal to gate downstream work.
+
+The question is what else the model is already telling us that we're not listening to.
+
+---
+
+## References and Code
+
+**Primary Source**
+- Reddit post by u/Pidtom: [Skipping 90% of KV dequant work → +22.8% decode at 32K (llama.cpp, TurboQuant)](https://reddit.com/r/LocalLLaMA/comments/1s56g07/) — March 27, 2026
+
+**Papers**
+- Zandieh, A., Daliri, M., Hadian, M., Mirrokni, V. "TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate." *ICLR 2026*. [arXiv:2504.19874](https://arxiv.org/abs/2504.19874)
+- Zandieh, A., et al. "QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead." [arXiv:2406.03482](https://arxiv.org/abs/2406.03482)
+- Zhang, Z., et al. "H2O: Heavy-Hitter Oracle for Efficient Generative Inference of Large Language Models." *NeurIPS 2023*. [arXiv:2306.14048](https://arxiv.org/abs/2306.14048)
+- Xie, S., et al. "Scaling Attention via Feature Sparsity." *ICLR 2026*. [arXiv:2603.22300](https://arxiv.org/abs/2603.22300)
+- Ilhan, F., et al. "AttentionPack: Attention-aware Inference Optimizations for Large Vision-Language Models." [arXiv:2603.23914](https://arxiv.org/abs/2603.23914)
+
+**Implementation and Documentation**
+- TurboQuant+ Python prototype: [github.com/TheTom/turboquant_plus](https://github.com/TheTom/turboquant_plus)
+- llama.cpp TurboQuant fork: [github.com/TheTom/llama-cpp-turboquant](https://github.com/TheTom/llama-cpp-turboquant)
+- Sparse V paper (informal): [docs/papers/sparse-v-dequant.md](https://github.com/TheTom/turboquant_plus/blob/main/docs/papers/sparse-v-dequant.md)
+- Decode speed hardware analysis (20 approaches): [docs/decode-speed-hardware-analysis.md](https://github.com/TheTom/turboquant_plus/blob/main/docs/decode-speed-hardware-analysis.md)
+- Long-context PPL validation: [docs/long-context-sparse-v-validation.md](https://github.com/TheTom/turboquant_plus/blob/main/docs/long-context-sparse-v-validation.md)
+- CUDA fork by @spiritbuun: [github.com/spiritbuun/llama-cpp-turboquant-cuda](https://github.com/spiritbuun/llama-cpp-turboquant-cuda)
+- RotorQuant (Clifford algebra variant): [github.com/scrya-com/rotorquant](https://github.com/scrya-com/rotorquant)
+- TurboQuant for vLLM: [turboquant-vllm on PyPI](https://pypi.org/project/turboquant-vllm/)
+- NIAH methodology: [github.com/gkamradt/LLMTest_NeedleInAHaystack](https://github.com/gkamradt/LLMTest_NeedleInAHaystack)
+
+**Google Research Blog**
+- [TurboQuant: Redefining AI efficiency with extreme compression](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/) — March 24, 2026
+
+**Hardware context**
+- Apple M5 Max: 546 GB/s memory bandwidth, up to 128GB unified memory ([TechCrunch](https://techcrunch.com/2026/03/03/apple-unveils-m5-pro-and-m5-max-chips-with-new-fusion-architecture/))
+- Apple M2 Pro: 200 GB/s memory bandwidth, up to 32GB unified memory
+
+---
+
+*Written based on primary sources: the full comment thread of u/Pidtom's r/LocalLLaMA post, the sparse-v-dequant.md informal paper, the decode-speed-hardware-analysis.md experiment log, the TurboQuant arXiv paper (2504.19874), and the Google Research blog post. All benchmark numbers are sourced directly from the primary documentation.*

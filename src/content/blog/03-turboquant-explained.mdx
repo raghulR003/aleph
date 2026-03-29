@@ -1,0 +1,467 @@
+---
+title: "TurboQuant Explained: The Math Behind the Speedup"
+description: "TurboQuant's key idea isn't polar coordinates — it's a random rotation that democratizes scalar quantization. Here's the geometry, the WHT matrix, the QJL trick, and what it means for your 24 GB GPU."
+pubDate: 2026-03-29
+coverImage: "https://images.unsplash.com/photo-1635070041078-e363dbe005cb?w=1200&h=600&fit=crop"
+coverAlt: "Abstract mathematical visualization of high-dimensional geometry"
+author: "default"
+tags: ["llm", "quantization", "math", "local-ai", "llama.cpp"]
+draft: false
+---
+
+## 1. Introduction: Why TurboQuant Is Suddenly Everywhere
+
+On March 24, 2026, Google Research quietly published a blog post titled *"TurboQuant: Redefining AI efficiency with extreme compression"*. Within 48 hours, r/LocalLLaMA had exploded with threads, forks, vibe-coded llama.cpp PRs, and at least one person announcing a 10–19× faster "alternative" built with Clifford algebra. The paper (arXiv:2504.19874, presented at ICLR 2026) had been on arXiv since April 2025, but Google's blog post turned it into a headline.
+
+The promise: compress your LLM's KV cache to **3 bits per value** — a 4.57× reduction from fp16 — with **zero accuracy loss**, no calibration data, and no retraining. On an H100, 4-bit TurboQuant computes attention logits **8× faster** than 32-bit unquantized keys. A practical CUDA implementation by Oliver Church achieved 72K+ context on Llama-3.3-70B-Instruct across two RTX 3090s — a context window that would require ~40 GiB of fp16 KV cache, far beyond what those GPUs could hold without compression.
+
+This post is about understanding *why* it works — not the marketing summary, and not the misleading "polar coordinates" framing. We will follow the math wherever it goes.
+
+---
+
+## 2. The Misconception: "Polar Coordinates!!!" Is the Wrong Intuition
+
+u/-p-e-w- on r/LocalLLaMA opened their now-viral explanation post with a direct challenge:
+
+> *"I've seen lots of comments here attempting to explain the magic behind it. Many of those comments boil down to 'dude, it's polar coordinates!!!', and that's really misleading. The most important part has nothing to do with polar coordinates."*
+
+The confusion is understandable. Google's own blog post leads with PolarQuant, and the Ars Technica write-up headlines "Angles and Errors." The polar-coordinates framing sounds intuitive: instead of storing `(x, y)` as "3 blocks East, 4 blocks North", you store `(r, θ)` as "5 blocks at 37°". Shorter description, same destination.
+
+But this analogy, while roughly correct for PolarQuant's *implementation detail*, completely obscures *why quantization is so much better after the transformation*. The core mechanism — the one that makes TurboQuant work — is not about switching coordinate systems. It is about **randomly rotating the vector before quantizing it**, a step that is entirely invisible from the polar-coordinates framing.
+
+PolarQuant is the *name* of TurboQuant's first compression stage. But within PolarQuant, the operative step is a random orthogonal rotation. The polar representation is just the format used to store the result of that rotation efficiently. Get the causality backwards and you'll misunderstand the whole algorithm.
+
+---
+
+## 3. The Real Mechanism: Random Rotation and the Curse of Dimensionality (Reversed)
+
+Let's start with u/-p-e-w-'s core insight, stated cleanly.
+
+### 3.1 The Problem with Quantizing Transformer Activations
+
+Quantization is simple in theory: you have a vector of floating-point numbers and you want to represent them with fewer bits. Round everything to the nearest value on a finite grid. Done.
+
+The trouble is that transformer KV-cache vectors are not well-behaved. They are *anisotropic* — energy is not spread evenly across dimensions. A normalized vector might look like:
+
+```
+x = [0.0000023, 0.9999428, 0.0000738, 0.0000003, ...]
+```
+
+This is what the literature calls a **massive activation** (Sun et al., 2024) or an **attention sink** (Gu et al., 2024). One dimension dominates. When you quantize such a vector at 4 bits per component, the massive component gets rounded to `1` and everything else rounds to `0`. The quantized vector `[0, 1, 0, 0, ...]` is just a cardinal direction — it has collapsed to `log₂(2n)` bits of information content when it should carry `k·n` bits.
+
+Concretely: a 128-dimensional vector at 4 bits per component should be able to store `128 × 4 = 512` bits of information. If that vector is nearly one-hot, quantization collapses it to `log₂(256) = 8` bits of actual information. A 64× degradation.
+
+### 3.2 The Rotation Fix
+
+The fix is beautifully simple: **rotate the vector before quantizing it**.
+
+If you apply a random orthogonal matrix `R ∈ ℝ^(d×d)` to the vector `x`, you get `y = Rx`. Because `R` is orthogonal, it preserves lengths (`‖Rx‖ = ‖x‖`) and angles between vectors (`⟨Rx, Ry⟩ = ⟨x, y⟩`). No information is lost in the rotation itself.
+
+But the distribution of coefficients in `y` is dramatically different from `x`. Even if `x` was nearly one-hot, after a random rotation `y` will be spread roughly uniformly across all dimensions. The massive activation has been *smeared* across 128 dimensions, each now carrying a modest, similar-magnitude coefficient.
+
+Now quantize `y` at 4 bits per component. The quantization error is uniformly distributed across all dimensions and is close to the theoretical optimal for the bit-width. To use the vector, dequantize `y` and apply the inverse rotation `R⁻¹ = Rᵀ` (orthogonal matrices have this nice property). You recover an approximation of `x`.
+
+**That's the entire key idea.** The rest is implementation.
+
+---
+
+## 4. Mathematical Deep-Dive: Why Random Rotation Solves the Problem
+
+### 4.1 The Beta Distribution and Concentration of Measure
+
+The TurboQuant paper (Zandieh et al., arXiv:2504.19874) gives this a rigorous treatment. Their Lemma 1 states:
+
+For a point `x` chosen uniformly at random from the unit hypersphere `S^(d-1)`, each individual coordinate follows the distribution:
+
+```
+f_X(x) = [Γ(d/2) / (√π · Γ((d-1)/2))] · (1 - x²)^((d-3)/2)
+```
+
+This is a **Beta distribution**. For small `d`, it's quite spread out. But as `d` grows, something remarkable happens: in high dimensions, this distribution concentrates tightly around zero, becoming approximately Gaussian:
+
+```
+X ≈ N(0, 1/d)   for large d
+```
+
+This is the **concentration of measure** phenomenon — the "curse of dimensionality" running in our favor. In high-dimensional spaces, a random point on the unit sphere has its mass nearly uniformly distributed among dimensions, with each coordinate being small (of order `1/√d`) and nearly independent of the others.
+
+When we randomly rotate `x` before quantizing, we're effectively drawing the rotated vector from this well-behaved distribution — concentrated, nearly Gaussian, with independent coordinates. This is the ideal target for scalar quantization: you need just one optimal quantizer, and applying it uniformly to all coordinates achieves near-optimal compression.
+
+### 4.2 Why Inner Products Are Preserved
+
+This is crucial for attention mechanisms, which compute `Q·Kᵀ`. If we store rotated K-vectors `y = Rx` in the cache and rotate the query the same way to get `q' = Rq`, then:
+
+```
+⟨q', y⟩ = ⟨Rq, Rx⟩ = qᵀRᵀRx = qᵀx = ⟨q, x⟩
+```
+
+Because `RᵀR = I` for orthogonal matrices. The dot product is **exactly preserved**. There is no approximation in the rotation step — only in the subsequent quantization of the rotated coefficients.
+
+This is what justifies the rotation approach for KV-cache compression: the rotated, quantized K-vectors can be used to compute approximate attention scores because the rotation itself introduces zero error.
+
+### 4.3 The Hadamard Matrix: Making Rotation Fast
+
+A random dense rotation matrix `R ∈ ℝ^(d×d)` is expensive: `O(d²)` to store and `O(d² )` to apply. For `d = 128`, that's 16,384 elements per matrix multiplication. Not practical for real-time inference.
+
+Enter the **Walsh-Hadamard Transform (WHT)**. The Hadamard matrix `H_d` is defined recursively:
+
+```
+H_1 = [1]
+
+H_(2n) = (1/√2) · | H_n   H_n |
+                    | H_n  -H_n |
+```
+
+The crucial properties:
+- **Orthogonal**: `H_d · H_dᵀ = I` (it's its own inverse, up to scaling)
+- **±1 entries only**: every element is exactly `+1/√d` or `-1/√d`
+- **Fast**: applies in `O(d log d)` via the butterfly algorithm, not `O(d²)`
+
+For `d = 32`, the WHT requires only 5 stages of butterfly operations:
+
+```
+for step in {1, 2, 4, 8, 16}:
+    for i in 0..32, step 2*step:
+        for j in i..i+step:
+            a, b = x[j], x[j+step]
+            x[j]      = a + b
+            x[j+step] = a - b
+```
+
+That's 80 add/subtract operations instead of `32 × 32 = 1024` multiply-adds. For GPU kernels operating on millions of vectors, this is the difference between a practical algorithm and a theoretical curiosity.
+
+In practice, TurboQuant uses the **randomized Hadamard Transform**:
+
+```
+Π = (1/√d) · D₂ · H_d · D₁
+```
+
+where `D₁` and `D₂` are diagonal matrices of random ±1 signs. The random sign matrices ensure that the rotation is truly random (not aligned with any fixed direction), while the Hadamard core provides the fast butterfly computation. This construction is sometimes written `SHD` (Sign-Hadamard-Diagonal) in the literature.
+
+The paper proves this randomized construction preserves the concentration-of-measure properties needed for near-optimal scalar quantization.
+
+---
+
+## 5. Polar Codebook Quantization: What Actually Happens After Rotation
+
+### 5.1 PolarQuant: The Right Way to Think About It
+
+After the WHT rotation, each coordinate of the rotated vector approximately follows `N(0, 1/d)`. This is nearly Gaussian and nearly independent across coordinates. The optimal scalar quantizer for a Gaussian distribution is the **Lloyd-Max quantizer** — the classic result from information theory that minimizes mean squared error for a given number of quantization levels.
+
+For 3-bit quantization (8 levels), the Lloyd-Max centroids for a unit-variance Gaussian are:
+
+| Index | Centroid `c_k` | Decision Boundary |
+|-------|---------------|-------------------|
+| 0     | −2.1573       | −∞                |
+| 1     | −1.3336       | −1.7455           |
+| 2     | −0.7434       | −1.0385           |
+| 3     | −0.2428       | −0.4931           |
+| 4     | +0.2428       | 0.0               |
+| 5     | +0.7434       | +0.4931           |
+| 6     | +1.3336       | +1.0385           |
+| 7     | +2.1573       | +1.7455           |
+
+The process is:
+1. Normalize the input vector: `x̂ = x / ‖x‖₂` (save the norm separately as fp16)
+2. Apply the randomized WHT: `y = Π x̂`
+3. Find the nearest centroid for each coordinate of `y`
+4. Store the centroid indices (3 bits each) plus the saved norm
+
+This is what Google calls "PolarQuant" — the "polar" part refers to the factoring of a vector into a radial component (the norm) and a directional component (the unit vector). The norm is stored at full precision; the direction is quantized via the Lloyd-Max codebook.
+
+The key advantage: because the WHT makes the coordinate distribution predictable and concentrated, **no per-block calibration is needed**. Traditional methods like GGUF's Q4_0 or Q8_0 store a per-block scale factor alongside every 32 elements. That scale factor overhead adds ~0.5 bits per element, partially negating the compression. PolarQuant eliminates this overhead because the distribution after rotation is already known.
+
+### 5.2 The tq3_0 Block Format
+
+In llama.cpp's emerging TurboQuant implementation, the 3-bit format `tq3_0` uses 14 bytes per 32 elements:
+
+```c
+typedef struct {
+    uint8_t  qs[8];   // Lower 2 bits of 3-bit index: 32 × 2 bits = 8 bytes
+    uint8_t  qr[4];   // Upper 1 bit of 3-bit index: 32 × 1 bit = 4 bytes
+    ggml_half gamma;   // Scale factor: 2 bytes (fp16)
+} block_tq3_0;         // Total: 14 bytes for 32 elements
+```
+
+Compression ratio: `(32 × 16 bits) / (14 × 8 bits) = 512 / 112 = 4.57×` over fp16. This is the **4.57× compression** cited in practical implementations.
+
+The 3-bit index for element `j` is reconstructed from:
+```
+idx_j = (qs[j/4] >> 2*(j%4)) & 3 | (((qr[j/8] >> (j%8)) & 1) << 2)
+```
+
+---
+
+## 6. The QJL Stage: Fixing a Subtle Bias
+
+### 6.1 Why MSE-Optimal Quantization Introduces Inner-Product Bias
+
+Here's a subtlety that the "just rotate and quantize" framing misses, and it's the second key contribution of TurboQuant.
+
+MSE-optimal quantization (like Lloyd-Max) minimizes `E[‖x - x̂‖²]`. But attention mechanisms don't care about MSE — they care about inner products `⟨q, k⟩`. These are different objectives, and minimizing MSE can introduce **systematic bias** in the estimated inner products.
+
+Specifically, if `x̂` is an MSE-optimal quantization of `x`, then in general:
+```
+E[⟨q, x̂⟩] ≠ ⟨q, x⟩
+```
+
+The MSE quantizer shrunken the estimates: if every value is rounded toward its centroid, the expected inner product with any query `q` is biased toward zero. This bias corrupts the softmax attention weights, introducing systematic errors in which tokens the model attends to.
+
+### 6.2 The QJL Fix: A 1-Bit Unbiased Estimator
+
+The Quantized Johnson-Lindenstrauss (QJL) stage fixes this. After the PolarQuant compression, a tiny residual error `ε = x - x̂` remains. QJL encodes this residual not as an MSE-minimizing approximation, but as an **unbiased inner-product estimator**.
+
+The Johnson-Lindenstrauss Lemma states that you can project a point from a high-dimensional space into a lower-dimensional space while approximately preserving pairwise distances. QJL takes this further: it projects the residual onto a random Gaussian matrix and stores only the **sign** of each projection (+1 or −1).
+
+For a single-bit QJL estimator:
+```
+sign(Aε) ∈ {+1, -1}^m
+```
+
+where `A ∈ ℝ^(m×d)` is a random Gaussian matrix. The estimator `⟨q, sign(Aε)⟩` is **unbiased** in expectation:
+```
+E[⟨q, sign(Aε)⟩] = c · ⟨q, ε⟩
+```
+
+for a known constant `c`. Combining the PolarQuant approximation with the QJL residual correction yields an estimator of `⟨q, x⟩` that is both low-variance (from PolarQuant) and unbiased (from QJL).
+
+The paper's two-stage approach is:
+1. **PolarQuant** handles the bulk of compression (~2–4 bits), capturing most of the vector's information
+2. **QJL residual** uses 1 additional bit to correct for bias in the inner product estimation
+
+Total: **3.5 bits per value** for "absolute quality neutrality" on LongBench benchmarks. **2.5 bits** for "marginal degradation."
+
+This is the stage that most early llama.cpp community implementations omit — implementing only the WHT rotation step, which gives the distribution improvement but not the unbiased estimator. As one llama.cpp contributor noted in PR #21038: *"I don't know what is the impact of the remaining techniques explained in TurboQuant (PolarQuant, QJL, etc.)."* The answer, per the paper, is that QJL is what enables the claim of zero bias in inner-product estimation.
+
+---
+
+## 7. Comparison: TurboQuant vs. Traditional Scalar Quantization
+
+### 7.1 What's Different About GGUF Q4_0, Q5_1, Q8_0
+
+Traditional GGUF quantization formats (as implemented in llama.cpp) follow a **block-scalar** approach:
+- Divide the vector into blocks of 32 elements
+- Find the maximum absolute value `amax` in the block
+- Normalize all values by `amax` and round to the nearest integer level
+- Store the integer levels plus `amax` as a scale factor
+
+This works reasonably well for weight quantization, where the distribution of values is relatively well-behaved. But KV-cache vectors can be badly anisotropic, and the scale factor overhead adds meaningful bits:
+
+| Format | Nominal BPW | Actual BPW | Overhead |
+|--------|------------|-----------|---------|
+| Q4_0   | 4 bits     | 4.5 bpw   | +0.5    |
+| Q5_0   | 5 bits     | 5.5 bpw   | +0.5    |
+| Q8_0   | 8 bits     | 8.5 bpw   | +0.5    |
+| tq3_0  | 3 bits     | 3.5 bpw   | +0.5 (norm only) |
+
+At first glance, tq3_0's overhead looks similar. But the crucial difference is what the overhead *buys you*. In Q4_0, the scale factor corrects for the wildly varying magnitudes of an anisotropic vector — it's carrying essential information. In tq3_0, the scale factor stores the norm of a normalized vector whose *direction* is encoded by near-optimal Lloyd-Max quantization of WHT-rotated coordinates. The rotation does the heavy lifting that the per-block calibration used to do, and it does it with less metadata.
+
+### 7.2 The Perplexity Numbers from ggerganov's PR #21038
+
+Georgi Gerganov (creator of llama.cpp) opened PR #21038 on March 26, 2026, with a clean implementation of the WHT rotation for Q, K, V — explicitly labeled as "raising the baseline a bit" before the flood of vibe-coded TurboQuant PRs arrived.
+
+On **Qwen3 0.6B** (baseline fp16 PPL = 13.6711):
+
+| KV Type | Master (no rotation) | PR (with WHT rotation) |
+|---------|---------------------|----------------------|
+| q8_0    | 13.9115             | 13.6713 ✅            |
+| q5_1    | 61.6992 🔥          | 14.1452              |
+| q5_0    | 17.2805             | 14.2171              |
+| q4_1    | 212.479 🔥          | 22.2816              |
+| q4_0    | 62.0161 🔥          | 46.2503              |
+
+The numbers for the master branch at q5_1 (PPL = 61.7) and q4_1 (PPL = 212.5) are catastrophic — the model is nearly incoherent. After the WHT rotation, q5_1 drops to 14.1 (close to the fp16 baseline of 13.67), and q4_1 from 212.5 to 22.3. Qwen3's small models are notoriously sensitive to KV quantization because of their strong anisotropy.
+
+On **Gemma3 4B** (baseline fp16 PPL = 7.6905):
+
+| KV Type | Master | PR (with WHT rotation) |
+|---------|--------|----------------------|
+| q8_0    | 7.6928 | 7.6914               |
+| q5_1    | 7.7133 | 7.7052               |
+| q5_0    | 7.7544 | 7.7182               |
+| q4_1    | 7.8095 | 7.7531               |
+| q4_0    | 7.8535 | 7.7928               |
+
+Gemma3, a better-conditioned model, shows more modest but consistent improvements. Every single configuration improves.
+
+A detailed AesSedai benchmark on **Qwen3.5 9B** across the full matrix of K-cache × V-cache type combinations showed consistent KLD (Kullback-Leibler Divergence) improvements, with the rotation helping most when both K and V caches were at low bit-widths.
+
+---
+
+## 8. Practical Results: Speed and Quality Benchmarks
+
+### 8.1 Paper Results (H100, Gemma and Mistral)
+
+From the TurboQuant paper and Google's blog post:
+
+| Configuration | Memory Reduction | Attention Speedup | Quality |
+|--------------|-----------------|-------------------|---------|
+| FP16 (baseline) | 1× | 1× | 100% |
+| 4-bit TurboQuant | ~4× | **8×** | ≈100% |
+| 3.5-bit TurboQuant | **6×** | ~5-6× | **100%** (absolute neutrality) |
+| 2.5-bit TurboQuant | ~8× | ~4× | marginal degradation |
+
+The 8× attention speedup at 4 bits on H100 is for computing attention logits specifically, not end-to-end throughput. Attention is the bottleneck at long context, but prefill is compute-bound, and there are other overhead costs. Real-world speedups are model- and workload-dependent.
+
+On Needle-in-a-Haystack tasks: TurboQuant at 3.5 bits achieved **perfect recall** — identical to the fp16 baseline — while reducing KV cache memory by 6×.
+
+### 8.2 Community Implementation Results (2× RTX 3090, Llama-3.3-70B)
+
+Oliver Church's CUDA implementation achieved on Llama-3.3-70B-Instruct-Q4_K_M:
+
+| Config | K bpw | V bpw | KV Size (8K) | Max Context | Compression | Gen (t/s) |
+|--------|-------|-------|-------------|-------------|-------------|----------|
+| fp16 baseline | 16 | 16 | 2,560 MiB | ~16K | 1× | 17.1 |
+| tq3_0 K+V (flash) | 3.5 | 3.5 | 560 MiB | **~80K** | **4.57×** | 5.1 |
+
+At 72K context, the fp16 KV cache would require ~23 GiB — impossible on 2× RTX 3090 alongside a 70B model. With tq3_0 compression, it fits comfortably, enabling a **5× larger effective context window** on the same hardware.
+
+The perplexity impact on WikiText-2:
+
+| Config | Compression | WikiText-2 PPL | Δ PPL | Δ% |
+|--------|------------|---------------|-------|-----|
+| fp16 baseline | 1× | 4.0907 | — | — |
+| tq3_0 K + fp16 V | 1.64× | 4.3593 | +0.27 | +6.6% |
+| tq3_0 K+V | **4.57×** | 4.3997 | +0.31 | **+7.6%** |
+
+The +7.6% perplexity increase is comparable in magnitude to the degradation from quantizing the model weights to Q4_K_M in the first place. It's a practical, usable trade-off.
+
+Note: this implementation uses only the PolarQuant/WHT stage, **without** the QJL unbiased estimator. The paper's "absolute quality neutrality" claims assume the full two-stage algorithm with QJL correction.
+
+### 8.3 vLLM Plugin (turboquant-vllm) — Vision Model Validation
+
+A separately released vLLM plugin (Alberto-Codes/turboquant-vllm) tested on Molmo2-4B with 11K visual tokens on an RTX 4090 reported:
+- KV cache: **1,639 MiB → 435 MiB** (3.76× compression)
+- ~97% cosine similarity on attention scores
+- 100+ output tokens matched word-for-word vs. uncompressed baseline
+- Decode overhead: 1.78× (from dequantization)
+
+This is notable because it's the first reported validation on a vision-language model, where KV vectors from visual tokens can be especially anisotropic.
+
+---
+
+## 9. Implementation in llama.cpp
+
+### 9.1 What ggerganov's PR #21038 Actually Implements
+
+PR #21038 (*"llama: rotate activations for better quantization"*, opened March 26, 2026) is the most carefully considered community implementation. Rather than attempting a full TurboQuant port, ggerganov implements the simplest version of the core idea:
+
+1. **Rotate Q, K, V** using the Hadamard matrix before storing in cache
+2. **Perform attention** on rotated Q·Kᵀ (dot product is preserved)
+3. **Rotate back** the output of the attention operation
+
+The normalization: the Hadamard matrix of size `n × n` is scaled by `1/√n` to make it orthonormal. This means the same matrix serves as both the forward rotation and the inverse:
+
+```c
+// llama-kv-cache.cpp
+auto* data = (float*) tensor->data;
+data[0*n + 0] = 1.0 / sqrtf(n);
+```
+
+The PR is explicitly marked "not full TurboQuant" — it doesn't implement PolarQuant or QJL. But it *is* compatible with all existing quantization types (Q4_0, Q5_0, Q8_0, etc.), adding a "near-zero cost" improvement to any quantized KV cache.
+
+### 9.2 Compatibility Notes
+
+The WHT rotation requires the head embedding dimension to be a power of 2 (or at least divisible by 64 in later versions of the PR). Models with non-power-of-2 head sizes cannot use the rotation, which is noted in the PR's requirements. MLA (Multi-head Latent Attention, as used in DeepSeek) is not supported.
+
+Prior art: ExLlamaV2 (turboderp) applied a Hadamard transform to K and V caches as early as April 12, 2024 — *before* the TurboQuant paper was published. The ik_llama.cpp fork also merged V-cache Hadamard transform support (PR #1527) around the same time as ggerganov's PR.
+
+### 9.3 Full TurboQuant Implementations
+
+The community has moved fast. As of late March 2026:
+
+- **tonbistudio/turboquant-pytorch**: PyTorch reference implementation with custom Triton kernels, validated on real model KV caches
+- **Alberto-Codes/turboquant-vllm**: vLLM plugin implementing the full two-stage algorithm including QJL, installable via pip
+- **animehacker/llama-turboquant**: CUDA implementation in llama.cpp achieving the 4.57× compression numbers, with detailed engineering notes
+- **TheTom/turboquant_plus**: llama.cpp port with passing quality tests
+- **Aaryan-Kapoor/llama.cpp (turboquant-tq3_0 branch)**: Another community fork implementing the tq3_0 format
+
+Oliver Church's benchmark showed tq3_0 at 3.5 bpw achieving PPL = 6.69 vs. Q4_0 at 4.5 bpw achieving PPL = 6.61 — the higher-precision format still wins slightly on perplexity, but tq3_0 enables 5× more context at 23% lower memory. At contexts above 16K, tq3_0 wins comprehensively because Q4_0 simply doesn't fit.
+
+---
+
+## 10. The Prior Art Controversy: RaBitQ
+
+The r/LocalLLaMA community surfaced a significant academic controversy. In an OpenReview comment, the RaBitQ team (Gao et al., SIGMOD 2024) accused the TurboQuant authors of inadequate credit for prior work:
+
+> *"Majid's January 2025 emails show that he had translated our C++ implementation of RaBitQ into Python and asked us to help debug it. In May 2025, he further acknowledged that, in the reported runtime setting, the RaBitQ baseline was run on a single CPU with multiprocessing disabled. The TurboQuant method itself is run on an A100 GPU."*
+
+u/-p-e-w- commented:
+
+> *"Such things are very unpleasant to see. In a few months, when people read the RaBitQ paper, they will think 'Oh, like Google's TurboQuant?' even though RaBitQ came first."*
+
+**RaBitQ** (arXiv:2405.12497, SIGMOD 2024) is a vector quantization algorithm for approximate nearest neighbor search that also uses random orthogonal rotation followed by scalar quantization — the same core idea. RaBitQ was published in May 2024; the TurboQuant preprint appeared in April 2025.
+
+TurboQuant's novel contributions beyond RaBitQ appear to be:
+1. The **QJL bias-correction stage** for unbiased inner-product estimation
+2. The **theoretical information-theoretic lower bounds** (proof that TurboQuant is within a constant factor ≈2.7 of optimal)
+3. Application to **KV-cache compression** specifically (vs. RaBitQ's focus on ANN search)
+
+Whether TurboQuant gave adequate credit to RaBitQ is an academic dispute that will likely play out in peer review. The core technique of random rotation for quantization has a long lineage: QuIP (2023), QuIP# (2024), and several earlier random-projection works predate both papers.
+
+---
+
+## 11. When to Use TurboQuant (and When Not To)
+
+### Use It When:
+- **Long context is your primary constraint.** TurboQuant KV compression trades a small perplexity penalty for dramatically more context per GB of VRAM. At 4.57× compression, a 24 GB GPU can hold roughly 4.5× more context tokens.
+- **Your model has anisotropic KV activations.** Qwen3, Qwen3.5, and similar models show dramatic improvements (sometimes going from catastrophically bad to near-baseline quality) because their activations are strongly anisotropic.
+- **You don't have calibration data.** Unlike KIVI or other per-channel methods, TurboQuant is data-oblivious: it works without training data or model-specific tuning.
+- **Vector search with massive corpora.** TurboQuant's indexing time is effectively zero (the rotation is online), vs. 239 seconds for Product Quantization on the same dataset.
+
+### Be Cautious When:
+- **Short context, speed is the priority.** For contexts under 16K on a single GPU where the cache fits comfortably in fp16, TurboQuant's dequantization overhead reduces generation speed. Church's numbers show non-flash tq3_0 at ~9 t/s vs. fp16 baseline at 17.1 t/s.
+- **You need the full algorithm.** Most community implementations (including ggerganov's PR #21038) implement only the WHT rotation stage, not the QJL bias correction. The "absolute quality neutrality" claims in the paper assume the complete two-stage algorithm.
+- **Models with non-standard head dimensions.** The WHT rotation requires head dimensions that are powers of 2 (or at least divisible by 64). MLA architectures (DeepSeek) are not currently supported.
+- **Weight quantization.** TurboQuant is designed for KV-cache compression. For weight quantization, QuIP# and other rotation-based methods are more mature. The gains may be smaller and the implementation more complex.
+
+### The Bottom Line
+
+TurboQuant's ~7.6% perplexity increase at 4.57× compression is a reasonable trade-off for users who need more context than their hardware can currently support in fp16. For users already running q4_0 or q5_0 KV caches (with their own overhead), applying WHT rotation at no compression change is a **no-brainer improvement** — it consistently reduces perplexity across all tested models and configurations, with negligible computational overhead.
+
+---
+
+## 12. Conclusion
+
+The key idea behind TurboQuant fits in a single sentence: **randomly rotating a high-dimensional vector before quantizing it dramatically improves compression quality**, because the rotation transforms anisotropic vectors into isotropic ones, enabling optimal scalar quantization of every coordinate simultaneously.
+
+This works because:
+1. High-dimensional spaces have a special property (concentration of measure) that makes uniformly random rotation nearly isotropic
+2. Rotation preserves dot products exactly — no information loss in the rotation step
+3. The Walsh-Hadamard Transform provides an orthogonal rotation in `O(d log d)` time rather than `O(d²)`
+4. After rotation, the coordinate distribution is nearly Gaussian and nearly independent — the optimal target for scalar quantization
+5. The QJL stage corrects for the systematic bias that MSE-optimal quantization introduces in inner-product estimation
+
+It's not polar coordinates. It's not a new coordinate system. It's a rotation that transforms a badly-behaved distribution into a well-behaved one, applied right before you quantize.
+
+Community adoption is fast. ggerganov's PR #21038 brings WHT rotation to all existing llama.cpp quantization formats with minimal code changes. The vibe-coded tq3_0 implementations are more experimental but demonstrate the full compression benefits. The QJL stage remains the frontier for community implementors.
+
+RotorQuant, announced just two days before this post, claims 10–19× faster rotation using Clifford algebra (Clifford rotors operate on 3D subspaces, requiring 44× fewer parameters than full Hadamard). It's fast, but reviewers note it can't fully randomize a high-dimensional vector — it misses the theoretical guarantees that make TurboQuant near-optimal. Whether "near-optimal" beats "fast enough and much cheaper" in practice is an open empirical question.
+
+The next 90 days will tell us whether TurboQuant's ~7.6% perplexity cost is acceptable for real workflows. The early signs are promising: on Qwen3 small models where standard KV quantization is catastrophic, WHT rotation makes 4-bit KV caching viable for the first time.
+
+---
+
+## References
+
+1. **Zandieh, A., Daliri, M., Hadian, M., Mirrokni, V.** (2025). *TurboQuant: Online Vector Quantization with Near-optimal Distortion Rate.* arXiv:2504.19874. ICLR 2026. [https://arxiv.org/abs/2504.19874](https://arxiv.org/abs/2504.19874)
+
+2. **Google Research Blog** (March 24, 2026). *TurboQuant: Redefining AI efficiency with extreme compression.* [https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/](https://research.google/blog/turboquant-redefining-ai-efficiency-with-extreme-compression/)
+
+3. **u/-p-e-w- on r/LocalLLaMA** (March 28, 2026). *A simple explanation of the key idea behind TurboQuant.* [https://reddit.com/r/LocalLLaMA/comments/1s62g5v/](https://reddit.com/r/LocalLLaMA/comments/1s62g5v/) (929 upvotes, 98% upvoted)
+
+4. **Gao, J. et al.** (2024). *RaBitQ: Quantizing High-Dimensional Vectors with a Theoretical Error Bound for Approximate Nearest Neighbor Search.* SIGMOD 2024. arXiv:2405.12497.
+
+5. **ggerganov** (March 26, 2026). *llama: rotate activations for better quantization.* llama.cpp PR #21038. [https://github.com/ggml-org/llama.cpp/pull/21038](https://github.com/ggml-org/llama.cpp/pull/21038)
+
+6. **Church, O.** (March 28, 2026). *TurboQuant for GGML: Achieving 4.57x KV Cache Compression in llama.cpp.* [https://oliverchurch.com/turboquant-for-ggml-achieving-4.57x-kv-cache-compression-in-llama.cpp.html](https://oliverchurch.com/turboquant-for-ggml-achieving-4.57x-kv-cache-compression-in-llama.cpp.html)
+
+7. **Alberto-Codes** (March 27, 2026). *Paper to PyPI in 72 hours: Building the first TurboQuant vLLM plugin.* [https://alberto.codes/blog/2026-03-27-paper-to-pypi-in-72-hours-building-the-first-turboquant-vllm-plugin](https://alberto.codes/blog/2026-03-27-paper-to-pypi-in-72-hours-building-the-first-turboquant-vllm-plugin)
+
+8. **u/Revolutionary_Ask154 on r/LocalLLaMA** (March 26, 2026). *RotorQuant: 10-19x faster alternative to TurboQuant via Clifford rotors (44x fewer params).* [https://reddit.com/r/LocalLLaMA/comments/1s44p77/](https://reddit.com/r/LocalLLaMA/comments/1s44p77/)
+
+9. **TurboQuant OpenReview (ICLR 2026)** — peer review and community discussion including prior work dispute with RaBitQ team. [https://openreview.net/forum?id=tO3ASKZlok](https://openreview.net/forum?id=tO3ASKZlok)
+
+10. **Sun, M. et al.** (2024). *Massive Activations.* [Referenced in context of KV anisotropy in transformer models.]
+
+11. **Egiazarian, V. et al.** (2024). *QuIP#: Even Better LLM Quantization with Hadamard Incoherence and Lattice Codebooks.* [Prior work on randomized Hadamard transform for weight quantization.]
