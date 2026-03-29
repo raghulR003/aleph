@@ -481,7 +481,7 @@ Q4_K_M + KV q8_0 + --fit on (no batch flags):
    → 14.6 GB VRAM
 ```
 
-This is a 35-billion-parameter model with 262K context capability, running at 74 tokens per second on a consumer GPU. Five years ago, this would have required a cluster. Today it requires an $800 GPU and a Docker command.
+This is a 35-billion-parameter model with 262K context capability, running at 74 tokens per second on a consumer GPU. Five years ago, this would have required a cluster. Today it requires an \$800 GPU and a Docker command.
 
 The experiment sequence also demonstrates something about the current state of local LLM tooling: there is enormous variance in performance and quality across ostensibly equivalent configurations. The difference between a badly-configured MoE inference server and a well-configured one is 3–10× in speed. The difference between a well-chosen and poorly-chosen quantization at the same bit width is nearly 4× in KLD. These are not small margins — they are the difference between a model that is practically useful and one that is frustratingly slow or subtly wrong.
 

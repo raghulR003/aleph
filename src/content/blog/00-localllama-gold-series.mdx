@@ -19,7 +19,7 @@ Each post in this series is a forensic reconstruction of a high-value r/LocalLLa
 
 ### 1. [Why Function Calling Is Wrong for Agents: Lessons from Manus](/blog/01-manus-function-calling)
 
-A former backend lead at Manus (the AI agent company Meta acquired for $2B) explains why he abandoned typed function calling after two years of production experience. The alternative: a single `run(command="...")` tool with Unix-style commands. The post covers the Unix philosophy alignment, the two-layer architecture (execution vs presentation), production failure stories (the PNG that caused 20 iterations of thrashing, the silent stderr that cost 50 seconds), and the broader convergence happening across the industry toward minimal, composable, text-based interfaces.
+A former backend lead at Manus (the AI agent company Meta acquired for \$2B) explains why he abandoned typed function calling after two years of production experience. The alternative: a single `run(command="...")` tool with Unix-style commands. The post covers the Unix philosophy alignment, the two-layer architecture (execution vs presentation), production failure stories (the PNG that caused 20 iterations of thrashing, the silent stderr that cost 50 seconds), and the broader convergence happening across the industry toward minimal, composable, text-based interfaces.
 
 **Key insight:** LLMs are text-stream operators, just like Unix was designed for human terminal users 50 years ago. The most durable agent architectures will recognize this convergence.
 
@@ -59,7 +59,7 @@ A community-requested experiment series on RTX 5080 16GB: Does KV q8_0 actually 
 
 ### 6. [How to Run 170K Context at 100+ tok/s: A Production Setup Guide](/blog/06-170k-context-production)
 
-Two used RTX 3090s ($800 each on eBay), NVLink, and vLLM with MTP speculative decoding can run Qwen3.5 27B at 100+ tok/s decode with 170K context — a configuration that would have required a $32,000 A100 node two years ago. This post breaks down the hardware, the hybrid Gated DeltaNet architecture (only 25% of layers contribute to KV cache growth), the AWQ BF16-INT4 quantization strategy, the memory math that fits 170K into 48GB, and the full vLLM configuration including Docker Compose.
+Two used RTX 3090s (\$800 each on eBay), NVLink, and vLLM with MTP speculative decoding can run Qwen3.5 27B at 100+ tok/s decode with 170K context — a configuration that would have required a \$32,000 A100 node two years ago. This post breaks down the hardware, the hybrid Gated DeltaNet architecture (only 25% of layers contribute to KV cache growth), the AWQ BF16-INT4 quantization strategy, the memory math that fits 170K into 48GB, and the full vLLM configuration including Docker Compose.
 
 **Key insight:** The infrastructure story for 100K+ context local inference is no longer "when will hardware get there?" It's "here is the exact command."
 

@@ -11,6 +11,8 @@ series: "LocalLLaMA Gold"
 seriesOrder: 4
 ---
 
+import Mermaid from '../../components/Mermaid.astro';
+
 Something interesting happened in the 48 hours after Google's TurboQuant paper dropped. Within two days of the March 24, 2026 blog post from Google Research, a developer named John D. Pope published a technical report on [scrya.com](https://www.scrya.com/rotorquant/) that replaced TurboQuant's core rotation mechanism wholesale — and made it 10 to 19 times faster in the process.
 
 That might sound like a benchmark trick. It isn't. The underlying mathematics is genuinely elegant, and the code is real, tested, and already the subject of a [vLLM feature request](https://github.com/vllm-project/vllm/issues/38291). The approach borrows from a branch of mathematics called *geometric algebra* — specifically, an object called a **Clifford rotor** — and it's worth understanding why, because rotors are going to keep showing up in ML research.
@@ -149,23 +151,25 @@ At 4K context, RotorQuant *outperforms* TurboQuant on top-1 and top-5 retrieval 
 Here is the full pipeline comparison:
 
 ### TurboQuant Pipeline
-```
-v ∈ ℝ^d
-  → Π × v    (d×d matmul: 16,384 FMAs for d=128)
-  → Lloyd-Max quantize each coordinate
-  → Store quantized indices + QJL 1-bit residual
-```
+
+<Mermaid chart={`
+flowchart LR
+  A["v ∈ ℝ^d"] --> B["Π × v\n(d×d matmul\n16,384 FMAs for d=128)"]
+  B --> C["Lloyd-Max quantize\neach coordinate"]
+  C --> D["Store quantized indices\n+ QJL 1-bit residual"]
+`} />
 
 ### RotorQuant Pipeline
-```
-v ∈ ℝ^d
-  → Split into ceil(d/3) groups of 3 dimensions
-  → Embed each group as grade-1 Cl(3,0) multivector: [0, v₁, v₂, v₃, 0, 0, 0, 0]
-  → Apply rotor sandwich per group: R × mv × R̃  (28 FMAs, sparse)
-  → Grade-aware Lloyd-Max quantize (separate codebooks for grade-1 components)
-  → Drop zero grades (grade-0, grade-2, grade-3 are zero after sandwich of grade-1 input)
-  → Store 129 indices per vector + QJL 1-bit residual
-```
+
+<Mermaid chart={`
+flowchart LR
+  A["v ∈ ℝ^d"] --> B["Split into ⌈d/3⌉\ngroups of 3 dims"]
+  B --> C["Embed each group as\ngrade-1 Cl(3,0) multivector\n[0, v₁, v₂, v₃, 0, 0, 0, 0]"]
+  C --> D["Rotor sandwich per group\nR × mv × R̃\n(28 FMAs, sparse)"]
+  D --> E["Grade-aware\nLloyd-Max quantize\n(grade-1 codebooks only)"]
+  E --> F["Drop zero grades\n(grades 0, 2, 3 are zero)"]
+  F --> G["Store 129 indices\n+ QJL 1-bit residual"]
+`} />
 
 The embedded multivector is always grade-1 (only e₁, e₂, e₃ components set). After the sandwich product `R v R̃` with a rotor R (even grade), the result is still grade-1. This is a fundamental algebraic property: rotors preserve grade. The scalar, bivector, and pseudoscalar components stay zero, which means you only need to store 3 numbers per group — matching TurboQuant's index count.
 

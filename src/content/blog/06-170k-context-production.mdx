@@ -15,7 +15,7 @@ On March 1, 2026, a user named u/JohnTheNerd3 posted a video to r/LocalLLaMA tha
 
 The top comment read: *"That's spectacular, on a dense 30b-ish dual-GPU split configuration. Never seen anything like it!"*
 
-It earned those reactions. What JohnTheNerd3 demonstrated wasn't just good performance — it was a configuration that most people assumed required a $32,000 A100 node, running on two used consumer cards you can buy on eBay for under a thousand dollars each. This is the full technical breakdown of how it works, why the numbers are real, and how to reproduce it.
+It earned those reactions. What JohnTheNerd3 demonstrated wasn't just good performance — it was a configuration that most people assumed required a \$32,000 A100 node, running on two used consumer cards you can buy on eBay for under a thousand dollars each. This is the full technical breakdown of how it works, why the numbers are real, and how to reproduce it.
 
 ---
 
@@ -34,9 +34,9 @@ Consider what 170,000 tokens actually represents:
 
 At 32K context — the common limit for consumer inference setups — you can hold about 25,000 words. That's enough for a chapter, a sprint's worth of code, a meeting transcript. At 170K, you can hold an entire codebase, annotate it, then write code against it in the same conversation. You can process a year's worth of customer support tickets in one pass. You can run legal analysis over full case files without chunking.
 
-The frontier model APIs have offered this — Claude 3.5 Sonnet supports 200K, Gemini 1.5 Pro supports 1M — but at price points that make production use painful. At $3 per million input tokens (Claude Sonnet pricing at time of writing), processing a single 170K-token document costs $0.51 per request. Run 10,000 such requests a month and you're paying $5,100 just in input token costs before generation.
+The frontier model APIs have offered this — Claude 3.5 Sonnet supports 200K, Gemini 1.5 Pro supports 1M — but at price points that make production use painful. At \$3 per million input tokens (Claude Sonnet pricing at time of writing), processing a single 170K-token document costs \$0.51 per request. Run 10,000 such requests a month and you're paying \$5,100 just in input token costs before generation.
 
-The JohnTheNerd3 setup runs this locally, at over 100 tok/s, for the cost of electricity — approximately $0.11/hour at average US electricity rates for 260W per card.
+The JohnTheNerd3 setup runs this locally, at over 100 tok/s, for the cost of electricity — approximately \$0.11/hour at average US electricity rates for 260W per card.
 
 ---
 
@@ -52,13 +52,13 @@ The RTX 3090 was NVIDIA's Ampere-generation flagship consumer GPU, released in S
 - **TDP:** 350W (stock)
 - **NVLink:** Supported (3rd gen, 112 GB/s bidirectional)
 - **PCIe:** 4.0 x16
-- **Current Used Price:** ~$800–$1,000 on eBay/Facebook Marketplace
+- **Current Used Price:** ~\$800–\$1,000 on eBay/Facebook Marketplace
 
 The critical advantage is that the 3090 has the largest VRAM of any consumer GPU in its generation — matching many datacenter cards from the same era. Two 3090s gives you **48GB of total VRAM**, which is exactly the amount needed to hold a quantized 27B model plus a 170K-token KV cache.
 
 JohnTheNerd3's setup includes **NVLink** — the proprietary high-speed GPU interconnect that NVIDIA includes on the 3090. A 2026 blog by Himesh P. benchmarking 4×RTX 3090 setups found that NVLink improved inference performance by **50%** for 2-GPU tensor-parallel configurations. The conventional wisdom had been that inference throughput doesn't depend on inter-GPU bandwidth — this experiment proved otherwise. With NVLink, all-reduce operations for tensor parallelism move data at 112 GB/s bidirectional rather than routing through PCIe (typically 16–32 GB/s in practice).
 
-**NVLink bridge pricing note:** NVLink bridges for the 3090 range from $70 to $600 on eBay depending on condition and bridge length. JohnTheNerd3 confirmed that without NVLink, performance degrades significantly — though he also noted that `geohot`'s open-source P2P driver for NVIDIA GPUs (`tinygrad/open-gpu-kernel-modules`) may partially replicate this benefit for those without the hardware.
+**NVLink bridge pricing note:** NVLink bridges for the 3090 range from \$70 to \$600 on eBay depending on condition and bridge length. JohnTheNerd3 confirmed that without NVLink, performance degrades significantly — though he also noted that `geohot`'s open-source P2P driver for NVIDIA GPUs (`tinygrad/open-gpu-kernel-modules`) may partially replicate this benefit for those without the hardware.
 
 **Power configuration:** Both JohnTheNerd3 and community replicator u/jslominski power-limited their cards. JohnTheNerd3 ran at **260W per card** (vs the stock 350W TDP). Jslominski ran at 280W. Benchmarks from Himesh P.'s work show the throughput sweet spot for RTX 3090 at approximately 220W — beyond that, you get diminishing returns on compute vs power consumption. At 260W, two cards draw a combined 520W under load, which is well within the capacity of a standard gaming PSU.
 
@@ -456,58 +456,58 @@ Let's run the numbers for a production use case: serving 8 concurrent users at 1
 
 | Component | Cost |
 |---|---|
-| 2× RTX 3090 (used, eBay) | ~$1,800 |
-| NVLink Bridge (used) | ~$150–200 |
-| Motherboard (dual-slot, PCIe 4.0) | ~$300–500 |
-| CPU (AMD Threadripper / Intel HEDT) | ~$300–600 |
-| RAM (64 GB DDR5) | ~$150 |
-| PSU (1200W) | ~$150 |
-| NVMe SSD (2 TB) | ~$100 |
-| **Total Hardware** | **~$2,950–3,350** |
+| 2× RTX 3090 (used, eBay) | ~\$1,800 |
+| NVLink Bridge (used) | ~\$150–200 |
+| Motherboard (dual-slot, PCIe 4.0) | ~\$300–500 |
+| CPU (AMD Threadripper / Intel HEDT) | ~\$300–600 |
+| RAM (64 GB DDR5) | ~\$150 |
+| PSU (1200W) | ~\$150 |
+| NVMe SSD (2 TB) | ~\$100 |
+| **Total Hardware** | **~\$2,950–3,350** |
 
 **Ongoing costs:**
 - Power: 2 × 260W + system overhead ≈ 600W total = 0.6 kWh/hour
-- At $0.12/kWh US average: **$0.072/hour**
-- Monthly (24/7 operation): **~$52/month in electricity**
+- At \$0.12/kWh US average: **\$0.072/hour**
+- Monthly (24/7 operation): **~\$52/month in electricity**
 
 ### Cloud GPU Comparison
 
 Per gpucost.org (March 2026 data), comparable cloud GPU pricing:
-- RTX 3090: **$0.081/hour** per GPU (cheapest provider)
-- A100 80GB: **$1.15/hour** per GPU
-- H100 SXM: **$2.10/hour** per GPU
+- RTX 3090: **\$0.081/hour** per GPU (cheapest provider)
+- A100 80GB: **\$1.15/hour** per GPU
+- H100 SXM: **\$2.10/hour** per GPU
 
 For the equivalent 2×3090 setup in the cloud:
-- 2× RTX 3090: ~$0.162/hour (assuming available — 3090s in cloud are rare)
+- 2× RTX 3090: ~\$0.162/hour (assuming available — 3090s in cloud are rare)
 
 To match the KV cache and context capacity with cloud GPUs, you'd realistically need an A100 80GB:
-- 1× A100 80GB: **$1.15/hour**
+- 1× A100 80GB: **\$1.15/hour**
 
 But the A100 single-card setup won't match the throughput of 2×3090 with MTP. To get equivalent throughput with cloud hardware:
-- 2× A100 80GB: **$2.30/hour**
+- 2× A100 80GB: **\$2.30/hour**
 
 **Break-even analysis:**
 ```
 Hardware cost ÷ (cloud hourly cost - electricity hourly cost)
-= $3,150 ÷ ($2.30 - $0.072)
-= $3,150 ÷ $2.228
+= \$3,150 ÷ (\$2.30 - \$0.072)
+= \$3,150 ÷ \$2.228
 ≈ 1,414 hours ≈ 59 days of continuous operation
 ```
 
-At 8 hours/day of actual use: break-even at **~6 months**. After that, the DIY setup is running at $0.072/hour versus $2.30/hour for equivalent cloud capacity — a **32× cost reduction**.
+At 8 hours/day of actual use: break-even at **~6 months**. After that, the DIY setup is running at \$0.072/hour versus \$2.30/hour for equivalent cloud capacity — a **32× cost reduction**.
 
 ### Token Economics
 
-At the $0.072/hour electricity cost and 585 tok/s output throughput:
+At the \$0.072/hour electricity cost and 585 tok/s output throughput:
 ```
-Cost per 1M output tokens = $0.072/hour ÷ (585 tok/s × 3,600 s/hr ÷ 1,000,000)
-                          = $0.072 ÷ 2.106
-                          = $0.034 per 1M output tokens
+Cost per 1M output tokens = \$0.072/hour ÷ (585 tok/s × 3,600 s/hr ÷ 1,000,000)
+                          = \$0.072 ÷ 2.106
+                          = \$0.034 per 1M output tokens
 ```
 
 Compare to API pricing (approximate March 2026):
-- Claude 3.5 Sonnet output: ~$3.00 per 1M tokens
-- GPT-4o output: ~$2.50 per 1M tokens
+- Claude 3.5 Sonnet output: ~\$3.00 per 1M tokens
+- GPT-4o output: ~\$2.50 per 1M tokens
 
 The DIY setup delivers output tokens at **~88× lower marginal cost** than frontier model APIs, with a model that competes on several benchmarks.
 
@@ -543,7 +543,7 @@ u/Equivalent-Home-223 reported infinite loops when using the setup with RooCode 
 
 ### 6. Hardware Availability
 
-Good 3090s are increasingly scarce on the secondhand market as they age into the AI-specific demand spike. The used price has held around $800–1,000 — significantly higher than immediately post-RTX 4000 launch. NVLink bridges for the 3090 require specific physical compatibility with your card models (Founders Edition vs AIB).
+Good 3090s are increasingly scarce on the secondhand market as they age into the AI-specific demand spike. The used price has held around \$800–1,000 — significantly higher than immediately post-RTX 4000 launch. NVLink bridges for the 3090 require specific physical compatibility with your card models (Founders Edition vs AIB).
 
 ### 7. llama.cpp Users Are Left Behind — For Now
 
@@ -599,7 +599,7 @@ The JohnTheNerd3 post is evidence of a specific inflection point in local LLM in
 
 The Qwen3.5 27B dense model's hybrid architecture (Gated DeltaNet + standard attention) is purpose-built for long context in constrained VRAM. Only 25% of layers contribute to KV cache growth. The MTP head provides speculative decoding without a second model. The AWQ BF16-INT4 quantization scheme exploits Ampere's native INT4 hardware support while preserving the linear attention layers at full precision.
 
-What vLLM provides on top: PagedAttention for flexible memory, continuous batching for multi-user throughput, FlashInfer for efficient paged KV attention, and a production-grade API server. The combination, on 2026-era used consumer hardware, beats what you'd have gotten from a $32,000 A100 server in 2022 — in both context length and throughput.
+What vLLM provides on top: PagedAttention for flexible memory, continuous batching for multi-user throughput, FlashInfer for efficient paged KV attention, and a production-grade API server. The combination, on 2026-era used consumer hardware, beats what you'd have gotten from a \$32,000 A100 server in 2022 — in both context length and throughput.
 
 The next step is obvious: as RTX 4090s age into the secondhand market at comparable price points (their 24 GB VRAM matches the 3090, with significantly higher compute), expect the same configuration to achieve proportionally better decode throughput. And as vLLM continues maturing its hybrid attention support, the performance ceiling will keep rising.
 
@@ -625,6 +625,6 @@ The infrastructure story for 100K+ context local inference is no longer "when wi
 
 8. **NodeNestor/qwen3.5-27b-mtp-llamacpp:** GitHub repository documenting Qwen3.5's MTP head architecture for speculative decoding. [github.com/NodeNestor/qwen3.5-27b-mtp-llamacpp](https://github.com/NodeNestor/qwen3.5-27b-mtp-llamacpp)
 
-9. **GPU Pricing Data (March 2026):** gpucost.org comparative GPU cloud pricing. RTX 3090 at $0.081/hour; A100 80GB at $1.15/hour.
+9. **GPU Pricing Data (March 2026):** gpucost.org comparative GPU cloud pricing. RTX 3090 at \$0.081/hour; A100 80GB at \$1.15/hour.
 
 10. **tinygrad/open-gpu-kernel-modules:** geohot's open-source NVIDIA GPU kernel modules enabling P2P inter-GPU communication without NVLink on consumer cards. [github.com/tinygrad/open-gpu-kernel-modules](https://github.com/tinygrad/open-gpu-kernel-modules)
