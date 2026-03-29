@@ -67,7 +67,7 @@ The root cause: turbo3 dequantization requires an 8-entry centroid lookup table 
 Tom systematically documented every approach tried over two days of experiments, ultimately testing **20 distinct dequant-level optimizations**. Here are the 14 most relevant, from the paper:
 
 | # | Approach | M2 8K tok/s | Result |
-|---|---|----------|-------------|--------|
+|---|---|----------|-------------|
 | 1 | **4-mag LUT + XOR sign** | **15.1** | **Best: +38% (halves constant addresses)** |
 | 2 | Batched byte extract | 13.7 | Better reading, still 8 LUT addresses |
 | 3 | Inline block dequant | 13.5 | I-cache pressure |
